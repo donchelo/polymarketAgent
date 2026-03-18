@@ -60,6 +60,10 @@
  * -- Migration: add whale_win_rate column to existing signals table
  * ALTER TABLE signals ADD COLUMN IF NOT EXISTS whale_win_rate NUMERIC;
  *
+ * -- Migration: multi-leader support
+ * ALTER TABLE signals ADD COLUMN IF NOT EXISTS leader_rank INT;
+ * ALTER TABLE signals ADD COLUMN IF NOT EXISTS leader_weight NUMERIC;
+ *
  * -- Leader config (singleton row, id=1)
  * CREATE TABLE IF NOT EXISTS leader_config (
  *   id             INT PRIMARY KEY DEFAULT 1,
@@ -115,6 +119,8 @@ export interface Signal {
   status: SignalStatus;
   exit_price: number | null;
   pnl_usdc: number | null;
+  leader_rank: number | null;   // 1 = top leader, 2 = second, etc.
+  leader_weight: number | null; // compositeScore / maxCompositeScore
   created_at: string;
 }
 

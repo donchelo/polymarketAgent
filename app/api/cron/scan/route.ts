@@ -81,14 +81,15 @@ async function fetchMarketMeta(marketId: string): Promise<{
 
 async function resolveOpenSignals(log: string[]): Promise<number> {
   const db = getSupabase();
-  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
+  // Check ALL open signals (no age cutoff) — limit per run to avoid timeout.
+  // Short-term markets (<24h) can close within the same cron window they were entered.
   const { data: openSignals } = await db
     .from("signals")
     .select("id, market_id, outcome, entry_price, suggested_size_usdc")
     .eq("status", "open")
-    .lt("created_at", cutoff)
-    .limit(15);
+    .order("created_at", { ascending: true }) // oldest first
+    .limit(20);
 
   if (!openSignals?.length) return 0;
 
@@ -199,6 +200,10 @@ export async function GET(req: NextRequest) {
       .sort((a, b) => b.compositeScore - a.compositeScore)
       .slice(0, TOP_WHALES);
 
+    // Multi-leader weighting: top whale = 1.0, others scale proportionally.
+    // Kelly bet is multiplied by (0.5 + 0.5 * weight) → range 50%–100% of full kelly.
+    const maxComposite = whales[0]?.compositeScore ?? 1;
+
     log.push(`Whales: ${whales.length} monitoreadas — ${whales.map(w => w.userName).join(", ")}`);
 
     // Update leader_config to top composite whale (for UI display)
@@ -225,7 +230,9 @@ export async function GET(req: NextRequest) {
 
     // ── Step 4: process each whale's recent BUYs ─────────────────────────────
     for (let i = 0; i < whales.length; i++) {
-      const whale  = whales[i];
+      const whale       = whales[i];
+      const leaderRank  = i + 1;  // 1 = top composite whale
+      const leaderWeight = whale.compositeScore / maxComposite;  // 0–1
       const result = tradeResults[i];
       if (result.status !== "fulfilled") {
         log.push(`FETCH_ERR: ${whale.userName}`);
@@ -286,12 +293,14 @@ export async function GET(req: NextRequest) {
           skipped++;
           continue;
         }
-        const betSize = kellySize(price, whale.winRate, whale.score);
-        if (betSize === 0) {
+        const rawBetSize = kellySize(price, whale.winRate, whale.score);
+        if (rawBetSize === 0) {
           log.push(`SKIP_NO_EDGE: ${whale.userName} → ${outcome} @ ${price.toFixed(3)}`);
           skipped++;
           continue;
         }
+        // Scale by leader weight: top whale gets full kelly, others proportionally less
+        const betSize = rawBetSize * (0.5 + 0.5 * leaderWeight);
         if (remainingCash < betSize * 0.5) {
           log.push(`SKIP_CASH: portfolio lleno ($${remainingCash.toFixed(2)} libre)`);
           skipped++;
@@ -316,13 +325,15 @@ export async function GET(req: NextRequest) {
           entry_price:          price,
           suggested_size_usdc:  suggestedSize,
           status:               "open",
+          leader_rank:          leaderRank,
+          leader_weight:        Math.round(leaderWeight * 1000) / 1000,
         });
 
         if (!insertErr) {
           newSignals++;
           remainingCash -= suggestedSize;
           whaleExposureMap.set(whale.address, (whaleExposureMap.get(whale.address) ?? 0) + suggestedSize);
-          log.push(`✓ COPY: ${whale.userName} → ${outcome} @ ${price.toFixed(3)} $${suggestedSize} | ${title || marketId.slice(0, 30)}`);
+          log.push(`✓ COPY [L${leaderRank}×${leaderWeight.toFixed(2)}]: ${whale.userName} → ${outcome} @ ${price.toFixed(3)} $${suggestedSize} | ${title || marketId.slice(0, 30)}`);
         }
       }
     }
