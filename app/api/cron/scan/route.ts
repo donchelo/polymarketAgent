@@ -178,69 +178,65 @@ export async function GET(req: NextRequest) {
 
     for (const c of candidates) {
       try {
-        const rawPositions = await fetchPositions(c.address);
+        // Fetch positions and existing snapshots IN PARALLEL (2 calls, not N+1)
+        const [rawPositions, { data: existingSnaps }] = await Promise.all([
+          fetchPositions(c.address),
+          db.from("position_snapshots")
+            .select("market_id, outcome, size, avg_price")
+            .eq("whale_address", c.address),
+        ]);
 
-        // Detect first-ever scan for this wallet
-        const { count: snapCount } = await db
-          .from("position_snapshots")
-          .select("*", { count: "exact", head: true })
-          .eq("whale_address", c.address);
+        // Build lookup set in memory
+        const snapSet = new Set(
+          (existingSnaps ?? []).map((s) => `${s.market_id}|${s.outcome}`)
+        );
+        const isFirstScan = snapSet.size === 0;
 
-        const isFirstScan = (snapCount ?? 0) === 0;
-        let firstScanCount = 0;
+        // Parse all valid positions
+        const positions = rawPositions
+          .map((p) => ({
+            marketId: String(p.conditionId ?? p.marketId ?? ""),
+            outcome:  String(p.outcome ?? ""),
+            size:     Number(p.size ?? p.currentValue ?? 0),
+            price:    Number(p.avgPrice ?? p.averagePrice ?? p.price ?? 0),
+            title:    String(p.title ?? p.marketTitle ?? p.market_title ?? ""),
+          }))
+          .filter((p) => p.marketId && p.outcome && p.size > 0 && p.price > 0 && p.price < 1);
 
-        for (const p of rawPositions) {
-          const marketId = String(p.conditionId ?? p.marketId ?? "");
-          const outcome  = String(p.outcome ?? "");
-          const size     = Number(p.size ?? p.currentValue ?? 0);
-          const price    = Number(p.avgPrice ?? p.averagePrice ?? p.price ?? 0);
+        // Batch upsert ALL positions (handles both new and existing in one call)
+        if (positions.length > 0) {
+          await db.from("position_snapshots").upsert(
+            positions.map((p) => ({
+              whale_address: c.address,
+              market_id:     p.marketId,
+              outcome:       p.outcome,
+              size:          p.size,
+              avg_price:     p.price,
+            })),
+            { onConflict: "whale_address,market_id,outcome" }
+          );
+        }
 
-          if (!marketId || !outcome || size <= 0 || price <= 0 || price >= 1) continue;
+        if (isFirstScan) {
+          log.push(`SNAPSHOT: ${c.userName || c.address.slice(0, 8)} — ${positions.length} posiciones guardadas, señales desde próximo scan`);
+          continue;
+        }
 
-          const { data: existing } = await db
-            .from("position_snapshots")
-            .select("id")
-            .eq("whale_address", c.address)
-            .eq("market_id", marketId)
-            .eq("outcome", outcome)
-            .maybeSingle();
+        // Identify truly new positions (not in previous snapshot)
+        const newPositions = positions.filter(
+          (p) => !snapSet.has(`${p.marketId}|${p.outcome}`)
+        );
 
-          if (existing) {
-            // Known position — just update tracking
-            await db.from("position_snapshots")
-              .update({ size, avg_price: price })
-              .eq("whale_address", c.address)
-              .eq("market_id", marketId)
-              .eq("outcome", outcome);
-            continue;
-          }
+        // Create signals for new positions
+        for (const p of newPositions) {
+          const betSize = kellySize(p.price, WIN_RATE_PROXY, c.score);
+          if (remainingCash < betSize * 0.5) { skipped++; continue; }
 
-          // New position — save snapshot
-          await db.from("position_snapshots").upsert({
-            whale_address: c.address, market_id: marketId,
-            outcome, size, avg_price: price,
-          });
-
-          // First scan = snapshot only, no signal (historical position)
-          if (isFirstScan) {
-            firstScanCount++;
-            continue;
-          }
-
-          // Real new entry — calculate Kelly size
-          const betSize = kellySize(price, WIN_RATE_PROXY, c.score);
-
-          // Skip if not enough cash remaining
-          if (remainingCash < betSize * 0.5) {
-            skipped++;
-            continue;
-          }
-
-          // Fetch market title from gamma-api
-          let marketTitle = String(p.title ?? p.marketTitle ?? p.market_title ?? "");
+          // Fetch title from gamma-api if not available
+          let marketTitle = p.title;
           if (!marketTitle) {
             try {
-              const r = await fetch(`${GAMMA_API}/markets?conditionIds=${marketId}`,
+              const r = await fetch(`${GAMMA_API}/markets?conditionIds=${p.marketId}`,
                 { headers: { Accept: "application/json" }, cache: "no-store" });
               if (r.ok) {
                 const m = await r.json();
@@ -250,34 +246,28 @@ export async function GET(req: NextRequest) {
           }
 
           const suggestedSize = Math.round(betSize * 100) / 100;
-
           const { error: insertErr } = await db.from("signals").insert({
             whale_address:        c.address,
             whale_score:          c.score,
             whale_trades_per_day: 0,
-            market_id:            marketId,
+            market_id:            p.marketId,
             market_title:         marketTitle,
-            outcome,
-            whale_size_usdc:      size,
-            entry_price:          price,
+            outcome:              p.outcome,
+            whale_size_usdc:      p.size,
+            entry_price:          p.price,
             suggested_size_usdc:  suggestedSize,
             status:               "open",
           });
 
-          if (insertErr) {
-            log.push(`ERR: ${insertErr.message}`);
-          } else {
+          if (!insertErr) {
             newSignals++;
             remainingCash -= suggestedSize;
-            log.push(
-              `NEW: ${c.userName || c.address.slice(0, 8)} → ${outcome} @ ${price.toFixed(3)} ` +
-              `$${suggestedSize} (Kelly) | ${marketTitle || marketId.slice(0, 25)}`
-            );
+            log.push(`NEW: ${c.userName || c.address.slice(0, 8)} → ${p.outcome} @ ${p.price.toFixed(3)} $${suggestedSize} | ${marketTitle || p.marketId.slice(0, 25)}`);
           }
         }
 
-        if (isFirstScan && firstScanCount > 0) {
-          log.push(`SNAPSHOT: ${c.userName || c.address.slice(0, 8)} — ${firstScanCount} posiciones guardadas, señales desde próximo scan`);
+        if (newPositions.length === 0) {
+          log.push(`OK: ${c.userName || c.address.slice(0, 8)} — ${positions.length} posiciones sin cambios`);
         }
       } catch (walletErr) {
         log.push(`WALLET_ERR: ${c.address.slice(0, 8)} — ${walletErr instanceof Error ? walletErr.message : String(walletErr)}`);
