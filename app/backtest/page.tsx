@@ -70,14 +70,14 @@ function Stat({ label, value, accent, sub }: { label: string; value: string | nu
 }
 
 const WINDOWS = [
-  { label: "Ayer",           startH: 48, endH: 24 },
-  { label: "Últimas 24h",    startH: 24, endH: 0  },
-  { label: "Últimas 48h",    startH: 48, endH: 0  },
-  { label: "Últimas 72h",    startH: 72, endH: 0  },
+  { label: "Hoy",       startH: 24,  endH: 0  },  // hoy aislado
+  { label: "Ayer",      startH: 48,  endH: 24 },  // ayer aislado
+  { label: "Anteayer",  startH: 72,  endH: 48 },  // anteayer aislado
+  { label: "Semana",    startH: 168, endH: 0  },  // 7 días acumulados
 ];
 
 export default function BacktestPage() {
-  const [window, setWindow] = useState(WINDOWS[0]);
+  const [window, setWindow] = useState(WINDOWS[1]); // default: Ayer (más resueltos)
   const [running, setRunning] = useState(false);
 
   const url = `/api/backtest?startH=${window.startH}&endH=${window.endH}`;
