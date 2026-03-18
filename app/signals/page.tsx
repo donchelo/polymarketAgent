@@ -152,9 +152,14 @@ function SignalRow({ signal: s }: { signal: Signal }) {
           </span>
           <span className="text-xs text-gray-600">{timeAgo(s.created_at)}</span>
         </div>
-        <p className="text-sm text-gray-200 truncate">
+        <a
+          href={`https://polymarket.com/event/${s.market_id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sm text-gray-200 hover:text-white hover:underline truncate block"
+        >
           {s.market_title || s.market_id.slice(0, 40) + "…"}
-        </p>
+        </a>
         <p className="text-xs text-gray-500 mt-0.5 font-mono">
           {s.whale_address.slice(0, 8)}… · score {s.whale_score?.toFixed(0)} · {s.whale_trades_per_day?.toFixed(1)} trades/día
         </p>
