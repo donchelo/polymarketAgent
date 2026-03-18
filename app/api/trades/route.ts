@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchTrades } from "@/lib/polymarket";
 
-export const revalidate = 300; // 5 minutes
+export const revalidate = 300;
+export const maxDuration = 30;
 
 export async function GET(req: NextRequest) {
   const address = req.nextUrl.searchParams.get("address");
@@ -12,12 +13,12 @@ export async function GET(req: NextRequest) {
   try {
     const raw = await fetchTrades(address, 20);
     const trades = raw.map((t) => ({
-      id:          String(t.id ?? ""),
-      marketId:    String(t.conditionId ?? t.market ?? t.marketId ?? ""),
+      marketId:    String(t.conditionId ?? t.marketId ?? ""),
       outcome:     String(t.outcome ?? t.side ?? ""),
+      side:        String(t.side ?? ""),
       size:        Number(t.size ?? 0),
       price:       Number(t.price ?? 0),
-      timestamp:   t.timestamp ?? t.created_at ?? t.time ?? null,
+      timestamp:   t.timestamp ?? null,
       marketTitle: String(t.title ?? t.marketTitle ?? ""),
     }));
 

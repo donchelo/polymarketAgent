@@ -52,8 +52,12 @@ export function LeaderboardTable({ wallets, loading }: Props) {
               onClick={() => router.push(`/wallet/${w.address}`)}
             >
               <td className="py-3 pr-4 text-gray-500 font-mono">{i + 1}</td>
-              <td className="py-3 pr-6 font-mono text-gray-300">
-                {w.address.slice(0, 6)}…{w.address.slice(-4)}
+              <td className="py-3 pr-6">
+                {w.userName ? (
+                  <span className="text-white font-medium">{w.userName}</span>
+                ) : (
+                  <span className="font-mono text-gray-300">{w.address.slice(0, 6)}…{w.address.slice(-4)}</span>
+                )}
               </td>
               <td className="py-3 pr-6 text-right font-mono text-white">
                 {w.tradesPerDay.toFixed(1)}

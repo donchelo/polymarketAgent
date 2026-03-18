@@ -1,7 +1,6 @@
-// Mirrors Python dataclasses from whale_scanner.py
-
 export interface WalletProfile {
   address: string;
+  userName?: string;
   profit: number;
   volume: number;
   tradesCount: number;
@@ -17,20 +16,18 @@ export interface Position {
   outcome: string;
   size: number;
   avgPrice: number;
+  currentValue?: number;
   marketTitle?: string;
-  detectedAt?: string;
 }
 
 export interface Trade {
   id?: string;
   marketId?: string;
-  conditionId?: string;
   outcome?: string;
   side?: string;
   size?: number;
   price?: number;
   timestamp?: number | string;
-  created_at?: string;
   marketTitle?: string;
 }
 
@@ -38,6 +35,7 @@ export interface LeaderboardResponse {
   wallets: WalletProfile[];
   computedAt: string;
   candidateCount: number;
+  rawCount?: number;
 }
 
 export interface PositionsResponse {
