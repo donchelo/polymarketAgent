@@ -143,7 +143,7 @@ export async function GET(req: NextRequest) {
           ...w,
           score: Number(w.score ?? 0),
           trades_per_day: Number(w.trades_per_day ?? 0),
-          win_rate: Number(w.win_rate ?? 0),
+          win_rate: Number(w.win_rate ?? 0.52), // proxy si aún no hay datos reales
         }))
       );
 
