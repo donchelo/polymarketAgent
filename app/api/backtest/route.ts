@@ -15,7 +15,10 @@ const WIN_RATE_PROXY      = 0.52;
 const MIN_PRICE           = 0.08;  // skip near-certain outcomes
 const MAX_PRICE           = 0.92;
 const MIN_EDGE            = 0.05;  // require ≥5% edge — filters coin-flip markets
+const MIN_REAL_WIN_RATE   = 0.54;  // skip whales with proven win rate below this
 const TOP_WHALES          = 10;
+
+const SPORTS_TAGS = ["nhl","nba","nfl","mlb","soccer","basketball","hockey","baseball","football","sports","tennis","golf","ufc","mma"];
 const MIN_SCORE           = 50;
 const MIN_TRADES_PER_DAY  = 1.5;
 
@@ -78,6 +81,11 @@ export async function GET(req: Request) {
   }
 
   const whales = dbWhales
+    .filter(w => {
+      // Exclude whales with verified poor win rate (null = no data yet = allowed)
+      if (w.real_win_rate != null && Number(w.real_win_rate) < MIN_REAL_WIN_RATE) return false;
+      return true;
+    })
     .map(w => ({
       address:      w.address,
       userName:     w.user_name ?? w.address.slice(0, 8),
@@ -216,6 +224,15 @@ export async function GET(req: Request) {
 
     if (!market) {
       openCount++;
+      return e;
+    }
+
+    // Skip sports O/U and spread markets — scan would have skipped these
+    const isSportsHandicap = market.tags.some(t => SPORTS_TAGS.includes(t.toLowerCase()))
+      && /\bO\/U\b|^Spread:|Spread\s[-+]/i.test(market.title);
+    if (isSportsHandicap) {
+      e.betSize = 0;
+      skipped++;
       return e;
     }
 

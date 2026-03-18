@@ -23,7 +23,11 @@ const MAX_MARKET_DURATION_H = 24;
 const MIN_PRICE  = 0.08;  // skip near-certain outcomes (market already decided)
 const MAX_PRICE  = 0.92;  // symmetric: don't buy >92¢ — no real edge
 const MIN_EDGE   = 0.05;  // require ≥5% edge over price — filters coin-flip markets (~0.49)
+const MIN_REAL_WIN_RATE = 0.54;  // skip whales with proven win rate below this
 const CLOB_API = "https://clob.polymarket.com";
+
+// Sports tags that indicate efficient handicap markets
+const SPORTS_TAGS = ["nhl","nba","nfl","mlb","soccer","basketball","hockey","baseball","football","sports","tennis","golf","ufc","mma"];
 
 // ─── Trade detection window ──────────────────────────────────────────────────
 const TRADE_WINDOW_SECS = 10 * 60; // look back 10 minutes
@@ -172,6 +176,11 @@ export async function GET(req: NextRequest) {
 
     // Sort by composite score and take top N
     const whales = dbWhales
+      .filter(w => {
+        // Exclude whales with verified poor win rate (null = no data yet = allowed)
+        if (w.real_win_rate != null && Number(w.real_win_rate) < MIN_REAL_WIN_RATE) return false;
+        return true;
+      })
       .map(w => ({
         address:       w.address,
         userName:      w.user_name ?? w.address.slice(0, 8),
@@ -253,10 +262,19 @@ export async function GET(req: NextRequest) {
           .limit(1);
         if (existing?.length) continue;
 
-        // Check market duration
-        const { title, durationH } = await fetchMarketMeta(marketId);
+        // Check market duration + category
+        const { title, durationH, tags } = await fetchMarketMeta(marketId);
         if (durationH === null || durationH > MAX_MARKET_DURATION_H) {
           log.push(`SKIP_LONG: ${whale.userName} ${marketId.slice(0, 10)} ${durationH === null ? "duración desconocida" : `${Math.round(durationH)}h`}`);
+          skipped++;
+          continue;
+        }
+
+        // Skip sports O/U and spread markets — efficient pricing, proxy edge is fictitious
+        const isSportsHandicap = tags.some(t => SPORTS_TAGS.includes(t.toLowerCase()))
+          && /\bO\/U\b|^Spread:|Spread\s[-+]/i.test(title);
+        if (isSportsHandicap) {
+          log.push(`SKIP_SPORTS_OU: ${whale.userName} → ${title.slice(0, 40)}`);
           skipped++;
           continue;
         }
