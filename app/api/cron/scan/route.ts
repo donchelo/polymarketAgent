@@ -34,34 +34,48 @@ function kellySize(price: number, winRate: number, whaleScore: number): number {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
-const GAMMA_API = "https://gamma-api.polymarket.com";
+// CLOB API has current markets; Gamma API only has 2020-era markets
+const CLOB_API = "https://clob.polymarket.com";
 
-// Only enter markets with duration <= this many hours
+// Only enter markets with time-to-resolution <= this many hours
 const MAX_MARKET_DURATION_H = 24;
 
 /**
- * Fetch market info from Gamma API.
- * Returns { title, durationH } — durationH is null if dates unavailable.
+ * Fetch market meta from CLOB API.
+ * Returns { title, durationH, tags, tokens }
+ * durationH = hours until resolution (null if unknown)
  */
-async function fetchMarketMeta(marketId: string): Promise<{ title: string; durationH: number | null }> {
+async function fetchMarketMeta(marketId: string): Promise<{
+  title: string;
+  durationH: number | null;
+  tags: string[];
+  tokens: Array<{ outcome: string; price: number; winner?: boolean }>;
+}> {
   try {
-    const r = await fetch(`${GAMMA_API}/markets?conditionIds=${marketId}`,
+    const r = await fetch(`${CLOB_API}/markets/${marketId}`,
       { headers: { Accept: "application/json" }, cache: "no-store" });
-    if (!r.ok) return { title: "", durationH: null };
-    const data = await r.json();
-    const m = Array.isArray(data) ? data[0] : data;
-    if (!m) return { title: "", durationH: null };
+    if (!r.ok) return { title: "", durationH: null, tags: [], tokens: [] };
+    const m = await r.json();
+    if (!m || m.condition_id !== marketId) return { title: "", durationH: null, tags: [], tokens: [] };
+
     const title = String(m.question ?? "");
+    const tags: string[] = m.tags ?? [];
+    const tokens = m.tokens ?? [];
+
+    // Sports markets always resolve same-day — treat as <24h
+    const isSports = tags.some((t: string) =>
+      ["sports","nhl","nba","nfl","mlb","soccer","basketball","hockey","baseball","football","tennis","ufc"].includes(t.toLowerCase())
+    );
     let durationH: number | null = null;
-    const start = m.startDate ?? m.createdAt;
-    const end   = m.endDate ?? m.closedTime;
-    if (start && end) {
-      const ms = new Date(end).getTime() - new Date(start).getTime();
-      if (ms > 0) durationH = ms / (1000 * 3600);
+    if (isSports) {
+      durationH = 12;
+    } else if (m.end_date_iso) {
+      const ms = new Date(m.end_date_iso).getTime() - Date.now();
+      if (!isNaN(ms)) durationH = ms / (1000 * 3600);
     }
-    return { title, durationH };
+    return { title, durationH, tags, tokens };
   } catch {
-    return { title: "", durationH: null };
+    return { title: "", durationH: null, tags: [], tokens: [] };
   }
 }
 
@@ -82,20 +96,24 @@ async function resolveOpenSignals(log: string[]): Promise<number> {
   for (const sig of openSignals) {
     try {
       const res = await fetch(
-        `${GAMMA_API}/markets?conditionIds=${sig.market_id}`,
+        `${CLOB_API}/markets/${sig.market_id}`,
         { headers: { Accept: "application/json" }, cache: "no-store" }
       );
       if (!res.ok) continue;
 
-      const markets = await res.json();
-      const market = Array.isArray(markets) ? markets[0] : markets;
-      if (!market || !(market.resolved === true || market.closed === true)) continue;
+      const market = await res.json();
+      if (!market || market.condition_id !== sig.market_id) continue;
+      if (!(market.closed === true)) continue;
 
-      const outcomePriceYes = Number(market.outcomePrices?.[0] ?? -1);
-      const outcomeIsYes    = sig.outcome?.toUpperCase() === "YES";
-      const won             = outcomeIsYes ? outcomePriceYes >= 0.99 : outcomePriceYes <= 0.01;
-      const exitPrice       = won ? 1 : 0;
-      const pnl             = (exitPrice - sig.entry_price) * sig.suggested_size_usdc;
+      // Find outcome token and check winner
+      const tokens: Array<{ outcome: string; price: number; winner?: boolean }> = market.tokens ?? [];
+      const sigOutcome = String(sig.outcome ?? "");
+      const matchedToken = tokens.find(
+        (tk) => tk.outcome.toLowerCase() === sigOutcome.toLowerCase()
+      ) ?? tokens.find((tk) => tk.outcome.toUpperCase() === "YES");
+      const won       = matchedToken ? (matchedToken.winner === true || matchedToken.price >= 0.99) : false;
+      const exitPrice = won ? 1 : 0;
+      const pnl       = (exitPrice - sig.entry_price) * sig.suggested_size_usdc;
 
       await db.from("signals").update({
         status:     won ? "won" : "lost",
@@ -395,19 +413,21 @@ export async function GET(req: NextRequest) {
           for (const sig of openLeaderSigs ?? []) {
             const key = `${sig.market_id}|${sig.outcome}`;
             if (!currentMarkets.has(key)) {
-              // Leader exited — try to get current market price
+              // Leader exited — get current market price from CLOB API
               let exitPrice = sig.entry_price;
               try {
                 const r = await fetch(
-                  `${GAMMA_API}/markets?conditionIds=${sig.market_id}`,
+                  `${CLOB_API}/markets/${sig.market_id}`,
                   { headers: { Accept: "application/json" }, cache: "no-store" }
                 );
                 if (r.ok) {
-                  const market = (await r.json())?.[0];
-                  const isYes = sig.outcome?.toUpperCase() === "YES";
-                  exitPrice = isYes
-                    ? Number(market?.outcomePrices?.[0] ?? sig.entry_price)
-                    : 1 - Number(market?.outcomePrices?.[0] ?? 1 - sig.entry_price);
+                  const market = await r.json();
+                  if (market?.condition_id === sig.market_id) {
+                    const tokens: Array<{ outcome: string; price: number }> = market.tokens ?? [];
+                    const tok = tokens.find((t) => t.outcome.toLowerCase() === String(sig.outcome ?? "").toLowerCase())
+                              ?? tokens[0];
+                    if (tok) exitPrice = tok.price;
+                  }
                 }
               } catch { /* use entry_price fallback */ }
 

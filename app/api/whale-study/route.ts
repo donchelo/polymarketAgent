@@ -6,41 +6,62 @@ import { computeLeaderScore } from "@/lib/leader";
 
 export const maxDuration = 60;
 
-const GAMMA_API = "https://gamma-api.polymarket.com";
+// CLOB API has current markets; Gamma API only has 2020-era markets
+const CLOB_API = "https://clob.polymarket.com";
 
-interface MarketInfo {
-  question: string;
-  startDate?: string;
-  endDate?: string;
-  resolved?: boolean;
-  closed?: boolean;
-  outcomePrices?: string[];
+interface ClobToken {
+  token_id: string;
+  outcome:  string;
+  price:    number;
+  winner?:  boolean;
 }
 
-// Each entry: [category, regex patterns with word boundaries]
+interface MarketInfo {
+  question:  string;
+  endDate?:  string;
+  resolved?: boolean;
+  closed?:   boolean;
+  tokens?:   ClobToken[];
+  tags?:     string[];
+}
+
+// Tag-based category detection (CLOB API provides tags: ["Sports","NHL","Hockey",...])
+const TAG_CATEGORY: Record<string, string> = {
+  bitcoin: "btc", btc: "btc",
+  ethereum: "eth", eth: "eth",
+  crypto: "crypto", cryptocurrency: "crypto", defi: "crypto", nft: "crypto",
+  politics: "politics", election: "politics", "us-politics": "politics",
+  sports: "sports", nhl: "sports", nba: "sports", nfl: "sports",
+  mlb: "sports", soccer: "sports", football: "sports", basketball: "sports",
+  hockey: "sports", baseball: "sports", tennis: "sports", golf: "sports",
+  ufc: "sports", mma: "sports", esports: "sports",
+  economics: "macro", macro: "macro", finance: "macro", fed: "macro",
+  inflation: "macro", "interest-rates": "macro",
+};
+
+// Regex fallback (used when CLOB tags are absent)
 const CATEGORY_PATTERNS: Array<[string, RegExp]> = [
   ["btc",      /\b(btc|bitcoin)\b/i],
   ["eth",      /\b(ethereum)\b|\beth price|\beth [<>$]/i],
   ["crypto",   /\b(crypto|dogecoin|doge|solana|\bsol\b|xrp|ripple|defi|nft|altcoin|memecoin|coinbase|binance)\b/i],
   ["politics", /\b(trump|harris|biden|election|congress|senate|democrat|republican|presidency|white house|supreme court|inauguration|tariff|nato|zelensky|putin|modi|macron|merz)\b/i],
-  // Explicit league names
   ["sports",   /\b(nba|nfl|nhl|mlb|fifa|ufc|f1|formula 1|super bowl|world cup|championship|playoffs|league|season|tournament|premier league|la liga|serie a|bundesliga|champions league)\b/i],
-  // NHL teams
   ["sports",   /\b(bruins|canadiens|maple leafs|leafs|lightning|kraken|islanders|rangers|sabres|golden knights|predators|jets|sharks|oilers|flames|canucks|senators|flyers|penguins|capitals|hurricanes|panthers|red wings|avalanche|blues|stars|wild|blackhawks|kings|ducks|coyotes|blue jackets)\b/i],
-  // NBA teams
   ["sports",   /\b(celtics|spurs|mavericks|mavs|cavaliers|cavs|hawks|pelicans|nuggets|thunder|raptors|rockets|bucks|lakers|warriors|nets|knicks|bulls|heat|suns|jazz|grizzlies|clippers|blazers|pacers|magic|hornets|kings|pistons|wizards)\b/i],
-  // NFL teams
   ["sports",   /\b(chiefs|eagles|patriots|cowboys|49ers|packers|bills|ravens|bengals|steelers|dolphins|jets|giants|commanders|bears|vikings|lions|seahawks|rams|cardinals|broncos|raiders|chargers|texans|colts|jaguars|titans|saints|falcons|panthers|buccaneers)\b/i],
-  // MLB teams
-  ["sports",   /\b(yankees|red sox|dodgers|cubs|mets|astros|giants|braves|cardinals|phillies|brewers|mariners|athletics|angels|rangers|tigers|indians|guardians|twins|white sox|royals|pirates|padres|rockies|diamondbacks|marlins|rays|nationals|orioles|blue jays)\b/i],
-  // Soccer clubs
+  ["sports",   /\b(yankees|red sox|dodgers|cubs|mets|astros|giants|braves|cardinals|phillies|brewers|mariners|athletics|angels|rangers|tigers|guardians|twins|white sox|royals|pirates|padres|rockies|diamondbacks|marlins|rays|nationals|orioles|blue jays)\b/i],
   ["sports",   /\b(chelsea|arsenal|liverpool|manchester|city fc|united fc|real madrid|barcelona|atletico|juventus|inter milan|ac milan|psg|paris saint-germain|bayern|dortmund|ajax|porto|benfica|celtic)\b/i],
-  // Generic "X vs Y" pattern — likely sports matchup (not caught by other patterns)
   ["sports",   /^[A-Z][a-zA-Z\s]+ vs\.? [A-Z][a-zA-Z\s]+$/],
   ["macro",    /\b(gdp|inflation|fed|federal reserve|interest rate|recession|unemployment|cpi|fomc|rate cut|rate hike)\b/i],
 ];
 
-function detectCategory(question: string): string {
+function detectCategory(question: string, tags: string[] = []): string {
+  // Tags from CLOB API are more reliable — check first
+  for (const tag of tags) {
+    const cat = TAG_CATEGORY[tag.toLowerCase()];
+    if (cat) return cat;
+  }
+  // Fallback to regex on question text
   for (const [cat, pattern] of CATEGORY_PATTERNS) {
     if (pattern.test(question)) return cat;
   }
@@ -50,20 +71,20 @@ function detectCategory(question: string): string {
 async function fetchMarketInfo(conditionId: string): Promise<MarketInfo | null> {
   try {
     const res = await fetch(
-      `${GAMMA_API}/markets?conditionIds=${conditionId}`,
+      `${CLOB_API}/markets/${conditionId}`,
       { headers: { Accept: "application/json" }, cache: "no-store" }
     );
     if (!res.ok) return null;
-    const data = await res.json();
-    const market = Array.isArray(data) ? data[0] : data;
-    if (!market) return null;
+    const m = await res.json();
+    // Validate the returned market matches what we queried
+    if (!m || m.condition_id !== conditionId) return null;
     return {
-      question:      market.question ?? "",
-      startDate:     market.startDate ?? market.createdAt ?? null,
-      endDate:       market.endDate ?? market.closedTime ?? null,
-      resolved:      market.resolved === true,
-      closed:        market.closed === true,
-      outcomePrices: market.outcomePrices ?? [],
+      question: m.question ?? "",
+      endDate:  m.end_date_iso ?? m.game_start_time ?? null,
+      resolved: m.closed === true,
+      closed:   m.closed === true,
+      tokens:   m.tokens ?? [],
+      tags:     m.tags   ?? [],
     };
   } catch {
     return null;
@@ -131,11 +152,11 @@ export async function GET() {
             won: boolean | null;
           }> = [];
 
-          // Build a map from conditionId to the trade direction (YES/NO)
+          // Build a map from conditionId to the trade outcome label (e.g. "Lightning", "YES")
           const tradeSides: Record<string, string> = {};
           for (const t of trades as Record<string, unknown>[]) {
             const cid = String(t.conditionId ?? t.market ?? t.marketId ?? "");
-            const outcome = String(t.outcome ?? "").toUpperCase();
+            const outcome = String(t.outcome ?? "");
             if (cid && outcome && !tradeSides[cid]) {
               tradeSides[cid] = outcome;
             }
@@ -147,29 +168,43 @@ export async function GET() {
             const m = r.value;
             const cid = conditionIds[i];
 
-            // Duration
+            // Duration: CLOB only gives endDate; use 24h as threshold for "short-term"
+            // For sports markets, end_date_iso is the game day — always short-term
             let durationH: number | null = null;
-            if (m.startDate && m.endDate) {
-              const start = new Date(m.startDate).getTime();
-              const end   = new Date(m.endDate).getTime();
-              if (!isNaN(start) && !isNaN(end) && end > start) {
-                durationH = (end - start) / (1000 * 3600);
+            const isSportsTag = (m.tags ?? []).some((t) =>
+              ["sports","nhl","nba","nfl","mlb","soccer","basketball","hockey","baseball","football","tennis","golf","ufc"].includes(t.toLowerCase())
+            );
+            if (isSportsTag) {
+              // Sports games always resolve same day — treat as <24h
+              durationH = 12;
+              totalDurationH += durationH;
+              shortTermCount++;
+            } else if (m.endDate) {
+              // For non-sports, estimate from endDate - now (how soon it resolves)
+              const end = new Date(m.endDate).getTime();
+              const now = Date.now();
+              if (!isNaN(end)) {
+                // Use time-to-resolution at trade time as proxy for "short term"
+                durationH = Math.abs(end - now) / (1000 * 3600);
                 totalDurationH += durationH;
                 if (durationH < 24) shortTermCount++;
               }
             }
 
-            // Category
-            const cat = detectCategory(m.question);
+            // Category — tags first, then question text
+            const cat = detectCategory(m.question, m.tags);
             categoryMap[cat] = (categoryMap[cat] ?? 0) + 1;
 
-            // Win rate estimation
-            if (m.resolved || m.closed) {
-              const yesPrice = Number(m.outcomePrices?.[0] ?? -1);
-              if (yesPrice >= 0 && m.question) {
+            // Win rate: use token winner field from CLOB
+            if ((m.resolved || m.closed) && m.tokens?.length) {
+              const tradeOutcome = tradeSides[cid] ?? "";
+              // Find matching token by outcome label
+              const matchedToken = m.tokens.find(
+                (tk) => tk.outcome.toLowerCase() === tradeOutcome.toLowerCase()
+              ) ?? m.tokens[0];
+              if (matchedToken && m.question) {
                 resolvedCount++;
-                const side = tradeSides[cid] ?? "YES";
-                const won  = side === "YES" ? yesPrice >= 0.99 : yesPrice <= 0.01;
+                const won = matchedToken.winner === true || matchedToken.price >= 0.99;
                 if (won) wonCount++;
 
                 if (recentMarkets.length < 5) {

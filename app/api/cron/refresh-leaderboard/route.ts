@@ -5,31 +5,44 @@ import { computeActivityMetrics, computeScore, FILTERS } from "@/lib/scoring";
 
 export const maxDuration = 60;
 
-const GAMMA_API = "https://gamma-api.polymarket.com";
+// CLOB API has current markets; Gamma API only has 2020-era markets
+const CLOB_API = "https://clob.polymarket.com";
+
+interface ClobToken { token_id: string; outcome: string; price: number; winner?: boolean; }
+
+const TAG_CATEGORY: Record<string, string> = {
+  bitcoin: "btc", btc: "btc",
+  ethereum: "eth", eth: "eth",
+  crypto: "crypto", cryptocurrency: "crypto", defi: "crypto", nft: "crypto",
+  politics: "politics", election: "politics", "us-politics": "politics",
+  sports: "sports", nhl: "sports", nba: "sports", nfl: "sports",
+  mlb: "sports", soccer: "sports", football: "sports", basketball: "sports",
+  hockey: "sports", baseball: "sports", tennis: "sports", golf: "sports",
+  ufc: "sports", mma: "sports", esports: "sports",
+  economics: "macro", macro: "macro", finance: "macro", fed: "macro",
+  inflation: "macro", "interest-rates": "macro",
+};
 
 const CATEGORY_PATTERNS: Array<[string, RegExp]> = [
   ["btc",      /\b(btc|bitcoin)\b/i],
   ["eth",      /\b(ethereum)\b|\beth price|\beth [<>$]/i],
   ["crypto",   /\b(crypto|dogecoin|doge|solana|\bsol\b|xrp|ripple|defi|nft|altcoin|memecoin|coinbase|binance)\b/i],
   ["politics", /\b(trump|harris|biden|election|congress|senate|democrat|republican|presidency|white house|supreme court|inauguration|tariff|nato|zelensky|putin|modi|macron|merz)\b/i],
-  // Explicit league names
   ["sports",   /\b(nba|nfl|nhl|mlb|fifa|ufc|f1|formula 1|super bowl|world cup|championship|playoffs|league|season|tournament|premier league|la liga|serie a|bundesliga|champions league)\b/i],
-  // NHL teams
   ["sports",   /\b(bruins|canadiens|maple leafs|leafs|lightning|kraken|islanders|rangers|sabres|golden knights|predators|jets|sharks|oilers|flames|canucks|senators|flyers|penguins|capitals|hurricanes|panthers|red wings|avalanche|blues|stars|wild|blackhawks|kings|ducks|coyotes|blue jackets)\b/i],
-  // NBA teams
   ["sports",   /\b(celtics|spurs|mavericks|mavs|cavaliers|cavs|hawks|pelicans|nuggets|thunder|raptors|rockets|bucks|lakers|warriors|nets|knicks|bulls|heat|suns|jazz|grizzlies|clippers|blazers|pacers|magic|hornets|kings|pistons|wizards)\b/i],
-  // NFL teams
   ["sports",   /\b(chiefs|eagles|patriots|cowboys|49ers|packers|bills|ravens|bengals|steelers|dolphins|jets|giants|commanders|bears|vikings|lions|seahawks|rams|cardinals|broncos|raiders|chargers|texans|colts|jaguars|titans|saints|falcons|panthers|buccaneers)\b/i],
-  // MLB teams
   ["sports",   /\b(yankees|red sox|dodgers|cubs|mets|astros|giants|braves|cardinals|phillies|brewers|mariners|athletics|angels|rangers|tigers|guardians|twins|white sox|royals|pirates|padres|rockies|diamondbacks|marlins|rays|nationals|orioles|blue jays)\b/i],
-  // Soccer clubs
   ["sports",   /\b(chelsea|arsenal|liverpool|manchester|city fc|united fc|real madrid|barcelona|atletico|juventus|inter milan|ac milan|psg|paris saint-germain|bayern|dortmund|ajax|porto|benfica|celtic)\b/i],
-  // Generic "X vs Y" pattern — likely sports matchup
   ["sports",   /^[A-Z][a-zA-Z\s]+ vs\.? [A-Z][a-zA-Z\s]+$/],
   ["macro",    /\b(gdp|inflation|fed|federal reserve|interest rate|recession|unemployment|cpi|fomc|rate cut|rate hike)\b/i],
 ];
 
-function detectCategory(question: string): string {
+function detectCategory(question: string, tags: string[] = []): string {
+  for (const tag of tags) {
+    const cat = TAG_CATEGORY[tag.toLowerCase()];
+    if (cat) return cat;
+  }
   for (const [cat, pattern] of CATEGORY_PATTERNS) {
     if (pattern.test(question)) return cat;
   }
@@ -39,20 +52,19 @@ function detectCategory(question: string): string {
 async function fetchMarketInfo(conditionId: string) {
   try {
     const res = await fetch(
-      `${GAMMA_API}/markets?conditionIds=${conditionId}`,
+      `${CLOB_API}/markets/${conditionId}`,
       { headers: { Accept: "application/json" }, cache: "no-store" }
     );
     if (!res.ok) return null;
-    const data = await res.json();
-    const m = Array.isArray(data) ? data[0] : data;
-    if (!m) return null;
+    const m = await res.json();
+    if (!m || m.condition_id !== conditionId) return null;
     return {
-      question:      String(m.question ?? ""),
-      startDate:     m.startDate ?? m.createdAt ?? null,
-      endDate:       m.endDate ?? m.closedTime ?? null,
-      resolved:      m.resolved === true,
-      closed:        m.closed === true,
-      outcomePrices: (m.outcomePrices ?? []) as string[],
+      question: String(m.question ?? ""),
+      endDate:  m.end_date_iso ?? m.game_start_time ?? null as string | null,
+      resolved: m.closed === true,
+      closed:   m.closed === true,
+      tokens:   (m.tokens ?? []) as ClobToken[],
+      tags:     (m.tags   ?? []) as string[],
     };
   } catch {
     return null;
@@ -83,24 +95,24 @@ async function computeMarketIntelligence(
     return { realWinRate: null, avgMarketDurationH: null, pctShortTerm: 0, topCategory: null };
   }
 
-  // Build trade side map
+  // Build trade outcome map
   const tradeSides: Record<string, string> = {};
   for (const t of trades) {
     const cid = String(t.conditionId ?? t.market ?? t.marketId ?? "");
-    const outcome = String(t.outcome ?? "").toUpperCase();
+    const outcome = String(t.outcome ?? "");
     if (cid && outcome && !tradeSides[cid]) tradeSides[cid] = outcome;
   }
 
-  // Fetch market info in parallel
+  // Fetch market info in parallel via CLOB API
   const marketInfos = await Promise.allSettled(
     conditionIds.map((cid) => fetchMarketInfo(cid))
   );
 
-  let totalDurationH   = 0;
-  let shortTermCount   = 0;
-  let resolvedCount    = 0;
-  let wonCount         = 0;
-  let validDurations   = 0;
+  let totalDurationH = 0;
+  let shortTermCount = 0;
+  let resolvedCount  = 0;
+  let wonCount       = 0;
+  let validDurations = 0;
   const categoryMap: Record<string, number> = {};
 
   for (let i = 0; i < marketInfos.length; i++) {
@@ -109,11 +121,18 @@ async function computeMarketIntelligence(
     const m = r.value;
     const cid = conditionIds[i];
 
-    if (m.startDate && m.endDate) {
-      const start = new Date(m.startDate).getTime();
-      const end   = new Date(m.endDate).getTime();
-      if (!isNaN(start) && !isNaN(end) && end > start) {
-        const dh = (end - start) / (1000 * 3600);
+    // Duration: sports markets are always same-day (<24h)
+    const isSports = (m.tags ?? []).some((t) =>
+      ["sports","nhl","nba","nfl","mlb","soccer","basketball","hockey","baseball","football","tennis","golf","ufc"].includes(t.toLowerCase())
+    );
+    if (isSports) {
+      totalDurationH += 12;
+      validDurations++;
+      shortTermCount++;
+    } else if (m.endDate) {
+      const end = new Date(m.endDate).getTime();
+      if (!isNaN(end)) {
+        const dh = Math.abs(end - Date.now()) / (1000 * 3600);
         totalDurationH += dh;
         validDurations++;
         if (dh < 24) shortTermCount++;
@@ -121,16 +140,18 @@ async function computeMarketIntelligence(
     }
 
     if (m.question) {
-      const cat = detectCategory(m.question);
+      const cat = detectCategory(m.question, m.tags);
       categoryMap[cat] = (categoryMap[cat] ?? 0) + 1;
     }
 
-    if ((m.resolved || m.closed) && m.outcomePrices?.length) {
-      const yesPrice = Number(m.outcomePrices[0] ?? -1);
-      if (yesPrice >= 0) {
+    if ((m.resolved || m.closed) && m.tokens?.length) {
+      const tradeOutcome = tradeSides[cid] ?? "";
+      const matchedToken = m.tokens.find(
+        (tk) => tk.outcome.toLowerCase() === tradeOutcome.toLowerCase()
+      ) ?? m.tokens[0];
+      if (matchedToken && m.question) {
         resolvedCount++;
-        const side = tradeSides[cid] ?? "YES";
-        if (side === "YES" ? yesPrice >= 0.99 : yesPrice <= 0.01) wonCount++;
+        if (matchedToken.winner === true || matchedToken.price >= 0.99) wonCount++;
       }
     }
   }
