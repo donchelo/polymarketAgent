@@ -5,8 +5,8 @@ const BASE_DATA_API = "https://data-api.polymarket.com";
 const USE_MOCK = process.env.USE_MOCK === "true";
 
 const MOCK_PROFILES: Record<string, unknown>[] = Array.from({ length: 20 }, (_, i) => ({
-  address: `0x${String(i + 1).padStart(40, "a")}`,
-  profit: 5000 + i * 3000,
+  proxyWalletAddress: `0x${String(i + 1).padStart(40, "a")}`,
+  pnl: 5000 + i * 3000,
   volume: 20000 + i * 10000,
   tradesCount: 80 + i * 15,
   winRate: 0.55 + (i % 5) * 0.02,
@@ -25,7 +25,6 @@ const MOCK_POSITIONS = Array.from({ length: 5 }, (_, i) => ({
   outcome: i % 2 === 0 ? "YES" : "NO",
   size: 200 + i * 50,
   avgPrice: 0.45 + i * 0.08,
-  marketTitle: `Mock Market ${i + 1}`,
 }));
 
 async function polyFetch(url: string, params: Record<string, string | number> = {}): Promise<unknown> {
@@ -37,13 +36,12 @@ async function polyFetch(url: string, params: Record<string, string | number> = 
   const res = await fetch(full, {
     headers: {
       Accept: "application/json",
-      "User-Agent": "PolymarketWhaleLeaderboard/1.0",
+      "User-Agent": "Mozilla/5.0",
     },
-    // Next.js fetch cache handled at route level via revalidate
     cache: "no-store",
   });
 
-  if (!res.ok) throw new Error(`Polymarket API error: ${res.status} ${url}`);
+  if (!res.ok) throw new Error(`Polymarket API ${res.status}: ${full}`);
   return res.json();
 }
 
@@ -57,14 +55,32 @@ function normalizeList(data: unknown): Record<string, unknown>[] {
   return [];
 }
 
+// New leaderboard endpoint — max 50 per request, paginate 4x to get 200
 export async function fetchLeaderboard(limit = 200): Promise<Record<string, unknown>[]> {
   if (USE_MOCK) return MOCK_PROFILES;
-  const data = await polyFetch(`${BASE_DATA_API}/profiles`, {
-    limit,
-    sortBy: "profit",
-    ascending: "false",
-  });
-  return normalizeList(data);
+
+  const pageSize = 50;
+  const pages = Math.ceil(Math.min(limit, 200) / pageSize);
+  const results: Record<string, unknown>[] = [];
+
+  for (let offset = 0; offset < pages * pageSize; offset += pageSize) {
+    try {
+      const data = await polyFetch(`${BASE_DATA_API}/v1/leaderboard`, {
+        limit: pageSize,
+        offset,
+        orderBy: "PNL",
+        timePeriod: "ALL",
+        category: "OVERALL",
+      });
+      const page = normalizeList(data);
+      if (!page.length) break;
+      results.push(...page);
+    } catch {
+      break;
+    }
+  }
+
+  return results;
 }
 
 export async function fetchTrades(address: string, limit = 100): Promise<Record<string, unknown>[]> {
@@ -75,9 +91,6 @@ export async function fetchTrades(address: string, limit = 100): Promise<Record<
 
 export async function fetchPositions(address: string): Promise<Record<string, unknown>[]> {
   if (USE_MOCK) return MOCK_POSITIONS as Record<string, unknown>[];
-  const data = await polyFetch(`${BASE_DATA_API}/positions`, {
-    user: address,
-    sizeThreshold: 0,
-  });
+  const data = await polyFetch(`${BASE_DATA_API}/positions`, { user: address });
   return normalizeList(data);
 }
