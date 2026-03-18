@@ -1,0 +1,43 @@
+name: Cron Jobs
+
+on:
+  schedule:
+    # Scan positions every 5 minutes
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  scan:
+    name: Scan whale positions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger scan cron
+        run: |
+          curl -sf -X GET \
+            -H "authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.VERCEL_URL }}/api/cron/scan" \
+            | tee /dev/stderr | jq '{ok, scanned, newSignals, resolved}'
+
+  refresh-leaderboard:
+    name: Refresh leaderboard cache
+    # Only runs every 30 min (on :00 and :30)
+    if: ${{ (github.event_name == 'schedule' && (startsWith(github.run_id, '0') || true)) || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if :00 or :30
+        id: check_time
+        run: |
+          MINUTE=$(date +%M)
+          if [ "$MINUTE" = "00" ] || [ "$MINUTE" = "30" ]; then
+            echo "run=true" >> $GITHUB_OUTPUT
+          else
+            echo "run=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Trigger leaderboard refresh
+        if: steps.check_time.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          curl -sf -X GET \
+            -H "authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.VERCEL_URL }}/api/cron/refresh-leaderboard" \
+            | tee /dev/stderr | jq '{ok, saved}'
