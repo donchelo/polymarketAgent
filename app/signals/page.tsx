@@ -23,8 +23,12 @@ interface Signal {
 }
 
 interface Stats {
-  totalSignals: number;
-  openPositions: number;
+  totalOpen: number;
+  maxOpen: number;
+  slotsAvailable: number;
+  exposure: number;
+  bankroll: number;
+  exposurePct: number;
   closedPositions: number;
   wins: number;
   losses: number;
@@ -60,7 +64,7 @@ export default function SignalsPage() {
   const stats   = data?.stats;
   const signals = data?.signals ?? [];
   const open    = signals.filter((s) => s.status === "open");
-  const closed  = signals.filter((s) => s.status !== "open");
+  const closed  = signals.filter((s) => s.status !== "open" && s.status !== "expired");
 
   return (
     <div className="space-y-8">
@@ -80,14 +84,35 @@ export default function SignalsPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: "Señales totales",   value: stats?.totalSignals ?? 0,              color: "text-white" },
-          { label: "Posiciones abiertas", value: stats?.openPositions ?? 0,           color: "text-blue-400" },
-          { label: "Win rate",           value: `${stats?.winRate ?? 0}%`,            color: stats?.winRate && stats.winRate >= 52 ? "text-green-400" : "text-gray-400" },
-          { label: "P&L simulado",       value: `$${(stats?.totalPnl ?? 0).toFixed(2)}`, color: (stats?.totalPnl ?? 0) >= 0 ? "text-green-400" : "text-red-400" },
+          {
+            label: "Posiciones abiertas",
+            value: `${stats?.totalOpen ?? 0}/${stats?.maxOpen ?? 20}`,
+            sub: `${stats?.slotsAvailable ?? 20} slots libres`,
+            color: "text-blue-400",
+          },
+          {
+            label: "Bankroll expuesto",
+            value: `$${(stats?.exposure ?? 0).toFixed(2)}`,
+            sub: `${stats?.exposurePct ?? 0}% de $${stats?.bankroll ?? 100}`,
+            color: (stats?.exposurePct ?? 0) > 80 ? "text-yellow-400" : "text-white",
+          },
+          {
+            label: "Win rate",
+            value: `${stats?.winRate ?? 0}%`,
+            sub: `${stats?.wins ?? 0}W / ${stats?.losses ?? 0}L`,
+            color: (stats?.winRate ?? 0) >= 52 ? "text-green-400" : "text-gray-400",
+          },
+          {
+            label: "P&L simulado",
+            value: `$${(stats?.totalPnl ?? 0).toFixed(2)}`,
+            sub: `${stats?.closedPositions ?? 0} cerradas`,
+            color: (stats?.totalPnl ?? 0) >= 0 ? "text-green-400" : "text-red-400",
+          },
         ].map((s) => (
           <div key={s.label} className="bg-gray-900 rounded-lg p-4">
             <p className="text-xs text-gray-500">{s.label}</p>
             <p className={`text-2xl font-mono font-bold mt-1 ${s.color}`}>{s.value}</p>
+            <p className="text-xs text-gray-600 mt-1">{s.sub}</p>
           </div>
         ))}
       </div>
