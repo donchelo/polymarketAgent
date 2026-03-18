@@ -16,13 +16,20 @@ export async function GET() {
     .eq("status", "open")
     .order("created_at", { ascending: false });
 
-  // Closed/won/lost for P&L history
+  // Closed/won/lost/whale_exited for P&L history
   const { data: closedSignals, error: closedErr } = await db
     .from("signals")
     .select("*")
-    .in("status", ["won", "lost"])
+    .in("status", ["won", "lost", "whale_exited"])
     .order("created_at", { ascending: false })
     .limit(200);
+
+  // Current leader
+  const { data: leaderRow } = await db
+    .from("leader_config")
+    .select("*")
+    .eq("id", 1)
+    .single();
 
   if (openErr || closedErr) {
     return NextResponse.json({ error: openErr?.message ?? closedErr?.message }, { status: 500 });
@@ -54,5 +61,6 @@ export async function GET() {
       winRate:         Math.round(winRate * 100),
       totalPnl:        Math.round(totalPnl * 100) / 100,
     },
+    leader: leaderRow ?? null,
   });
 }

@@ -10,13 +10,14 @@ interface Signal {
   whale_address: string;
   whale_score: number;
   whale_trades_per_day: number;
+  whale_win_rate?: number;
   market_id: string;
   market_title: string;
   outcome: string;
   whale_size_usdc: number;
   entry_price: number;
   suggested_size_usdc: number;
-  status: "open" | "won" | "lost" | "expired";
+  status: "open" | "won" | "lost" | "expired" | "whale_exited";
   exit_price?: number;
   pnl_usdc?: number;
   created_at: string;
@@ -36,12 +37,23 @@ interface Stats {
   totalPnl: number;
 }
 
+interface Leader {
+  address: string;
+  user_name?: string;
+  score?: number;
+  trades_per_day?: number;
+  win_rate?: number;
+  leader_score?: number;
+  selected_at: string;
+}
+
 function statusBadge(status: Signal["status"]) {
-  const map = {
-    open:    "bg-blue-900/50 text-blue-300 border border-blue-700",
-    won:     "bg-green-900/50 text-green-300 border border-green-700",
-    lost:    "bg-red-900/50 text-red-300 border border-red-700",
-    expired: "bg-gray-800 text-gray-400 border border-gray-700",
+  const map: Record<Signal["status"], string> = {
+    open:         "bg-blue-900/50 text-blue-300 border border-blue-700",
+    won:          "bg-green-900/50 text-green-300 border border-green-700",
+    lost:         "bg-red-900/50 text-red-300 border border-red-700",
+    expired:      "bg-gray-800 text-gray-400 border border-gray-700",
+    whale_exited: "bg-yellow-900/50 text-yellow-300 border border-yellow-700",
   };
   return map[status] ?? map.expired;
 }
@@ -54,8 +66,17 @@ function timeAgo(ts: string) {
   return `${Math.floor(s / 86400)}d`;
 }
 
+function StatItem({ label, value }: { label: string; value: string | number | undefined }) {
+  return (
+    <div className="text-right">
+      <p className="text-xs text-indigo-400">{label}</p>
+      <p className="font-mono font-bold text-white">{value ?? "—"}</p>
+    </div>
+  );
+}
+
 export default function SignalsPage() {
-  const { data, isLoading } = useSWR<{ signals: Signal[]; stats: Stats }>(
+  const { data, isLoading } = useSWR<{ signals: Signal[]; stats: Stats; leader: Leader | null }>(
     "/api/signals",
     fetcher,
     { refreshInterval: 30_000 }
@@ -63,6 +84,7 @@ export default function SignalsPage() {
 
   const stats   = data?.stats;
   const signals = data?.signals ?? [];
+  const leader  = data?.leader ?? null;
   const open    = signals.filter((s) => s.status === "open");
   const closed  = signals.filter((s) => s.status !== "open" && s.status !== "expired");
 
@@ -73,13 +95,37 @@ export default function SignalsPage() {
         <div>
           <h2 className="text-2xl font-bold text-white">Señales Paper Trading</h2>
           <p className="text-sm text-gray-500 mt-1">
-            Simulación con $100 USDC — copiando entradas de top whales
+            Simulación con $100 USDC — copiando al líder único
           </p>
         </div>
         <Link href="/" className="text-sm text-gray-500 hover:text-gray-300">
           ← Leaderboard
         </Link>
       </div>
+
+      {/* Leader card */}
+      {leader && (
+        <div className="bg-indigo-950/50 border border-indigo-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="min-w-0">
+            <p className="text-xs text-indigo-400 uppercase tracking-wider">Siguiendo al líder</p>
+            <p className="text-lg font-mono font-bold text-white truncate">
+              {leader.user_name || leader.address.slice(0, 10) + "…"}
+            </p>
+          </div>
+          <div className="flex gap-6 sm:ml-auto flex-wrap">
+            <StatItem label="Win Rate" value={leader.win_rate != null ? `${(leader.win_rate * 100).toFixed(0)}%` : undefined} />
+            <StatItem label="Trades/día" value={leader.trades_per_day?.toFixed(1)} />
+            <StatItem label="Score" value={leader.score?.toFixed(0)} />
+            <StatItem label="Desde" value={timeAgo(leader.selected_at)} />
+          </div>
+        </div>
+      )}
+
+      {!isLoading && !leader && (
+        <div className="bg-indigo-950/30 border border-indigo-900 rounded-lg p-4 text-center">
+          <p className="text-indigo-400 text-sm">Sin líder seleccionado aún. El próximo scan evaluará candidatos.</p>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -170,7 +216,7 @@ function SignalRow({ signal: s }: { signal: Signal }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
           <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusBadge(s.status)}`}>
-            {s.status.toUpperCase()}
+            {s.status === "whale_exited" ? "SALIÓ" : s.status.toUpperCase()}
           </span>
           <span className={`text-xs font-mono font-bold ${s.outcome?.toLowerCase() === "yes" ? "text-green-400" : "text-red-400"}`}>
             {s.outcome}
@@ -187,6 +233,7 @@ function SignalRow({ signal: s }: { signal: Signal }) {
         </a>
         <p className="text-xs text-gray-500 mt-0.5 font-mono">
           {s.whale_address.slice(0, 8)}… · score {s.whale_score?.toFixed(0)} · {s.whale_trades_per_day?.toFixed(1)} trades/día
+          {s.whale_win_rate != null && ` · WR ${(s.whale_win_rate * 100).toFixed(0)}%`}
         </p>
       </div>
 
