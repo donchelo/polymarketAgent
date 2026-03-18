@@ -22,8 +22,21 @@ const CATEGORY_PATTERNS: Array<[string, RegExp]> = [
   ["btc",      /\b(btc|bitcoin)\b/i],
   ["eth",      /\b(ethereum)\b|\beth price|\beth [<>$]/i],
   ["crypto",   /\b(crypto|dogecoin|doge|solana|\bsol\b|xrp|ripple|defi|nft|altcoin|memecoin|coinbase|binance)\b/i],
-  ["politics", /\b(trump|harris|biden|election|congress|senate|democrat|republican|presidency|white house|supreme court|inauguration|tariff|nato)\b/i],
-  ["sports",   /\b(nba|nfl|nhl|mlb|fifa|ufc|f1|formula 1|super bowl|world cup|championship|playoffs|league|season|tournament)\b/i],
+  ["politics", /\b(trump|harris|biden|election|congress|senate|democrat|republican|presidency|white house|supreme court|inauguration|tariff|nato|zelensky|putin|modi|macron|merz)\b/i],
+  // Explicit league names
+  ["sports",   /\b(nba|nfl|nhl|mlb|fifa|ufc|f1|formula 1|super bowl|world cup|championship|playoffs|league|season|tournament|premier league|la liga|serie a|bundesliga|champions league)\b/i],
+  // NHL teams
+  ["sports",   /\b(bruins|canadiens|maple leafs|leafs|lightning|kraken|islanders|rangers|sabres|golden knights|predators|jets|sharks|oilers|flames|canucks|senators|flyers|penguins|capitals|hurricanes|panthers|red wings|avalanche|blues|stars|wild|blackhawks|kings|ducks|coyotes|blue jackets)\b/i],
+  // NBA teams
+  ["sports",   /\b(celtics|spurs|mavericks|mavs|cavaliers|cavs|hawks|pelicans|nuggets|thunder|raptors|rockets|bucks|lakers|warriors|nets|knicks|bulls|heat|suns|jazz|grizzlies|clippers|blazers|pacers|magic|hornets|kings|pistons|wizards)\b/i],
+  // NFL teams
+  ["sports",   /\b(chiefs|eagles|patriots|cowboys|49ers|packers|bills|ravens|bengals|steelers|dolphins|jets|giants|commanders|bears|vikings|lions|seahawks|rams|cardinals|broncos|raiders|chargers|texans|colts|jaguars|titans|saints|falcons|panthers|buccaneers)\b/i],
+  // MLB teams
+  ["sports",   /\b(yankees|red sox|dodgers|cubs|mets|astros|giants|braves|cardinals|phillies|brewers|mariners|athletics|angels|rangers|tigers|indians|guardians|twins|white sox|royals|pirates|padres|rockies|diamondbacks|marlins|rays|nationals|orioles|blue jays)\b/i],
+  // Soccer clubs
+  ["sports",   /\b(chelsea|arsenal|liverpool|manchester|city fc|united fc|real madrid|barcelona|atletico|juventus|inter milan|ac milan|psg|paris saint-germain|bayern|dortmund|ajax|porto|benfica|celtic)\b/i],
+  // Generic "X vs Y" pattern — likely sports matchup (not caught by other patterns)
+  ["sports",   /^[A-Z][a-zA-Z\s]+ vs\.? [A-Z][a-zA-Z\s]+$/],
   ["macro",    /\b(gdp|inflation|fed|federal reserve|interest rate|recession|unemployment|cpi|fomc|rate cut|rate hike)\b/i],
 ];
 
