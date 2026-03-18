@@ -268,20 +268,19 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const finalExposure = currentExposure + (openSigs ? 0 : 0) +
-      (newSignals > 0 ? maxExposure - remainingCash - currentExposure : 0);
+    const newExposure = availableCash - remainingCash; // how much cash we deployed this run
+    const totalExposure = currentExposure + newExposure;
 
     return NextResponse.json({
-      ok:           true,
-      scanned:      candidates.length,
+      ok:      true,
+      scanned: candidates.length,
       newSignals,
       resolved,
       skipped,
       portfolio: {
         open:     openCount + newSignals,
-        exposure: `$${(currentExposure + (maxExposure - availableCash - remainingCash)).toFixed(2)}`,
-        bankroll: `$${BANKROLL}`,
-        pct:      `${Math.round(((currentExposure + (maxExposure - availableCash - remainingCash)) / BANKROLL) * 100)}%`,
+        exposure: `$${totalExposure.toFixed(2)}/$${maxExposure.toFixed(0)}`,
+        pct:      `${Math.round((totalExposure / BANKROLL) * 100)}%`,
       },
       log,
       ts: new Date().toISOString(),
