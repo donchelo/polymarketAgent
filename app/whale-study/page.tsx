@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 
@@ -214,9 +214,8 @@ export default function WhaleStudyPage() {
             </thead>
             <tbody>
               {data.whales.map((whale) => (
-                <>
+                <React.Fragment key={whale.address}>
                   <tr
-                    key={whale.address}
                     className={`border-b border-gray-800/50 transition cursor-pointer hover:bg-gray-800/30 ${
                       whale.isCurrentLeader ? "bg-yellow-950/20" : ""
                     }`}
@@ -321,7 +320,7 @@ export default function WhaleStudyPage() {
                       </td>
                     </tr>
                   )}
-                </>
+                </React.Fragment>
               ))}
             </tbody>
           </table>
