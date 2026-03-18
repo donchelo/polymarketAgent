@@ -23,12 +23,12 @@ interface Signal {
 }
 
 interface Stats {
-  totalOpen: number;
-  maxOpen: number;
-  slotsAvailable: number;
+  openPositions: number;
   exposure: number;
+  maxExposure: number;
   bankroll: number;
   exposurePct: number;
+  availableCash: number;
   closedPositions: number;
   wins: number;
   losses: number;
@@ -86,15 +86,15 @@ export default function SignalsPage() {
         {[
           {
             label: "Posiciones abiertas",
-            value: `${stats?.totalOpen ?? 0}/${stats?.maxOpen ?? 20}`,
-            sub: `${stats?.slotsAvailable ?? 20} slots libres`,
+            value: stats?.openPositions ?? 0,
+            sub: `$${(stats?.availableCash ?? 80).toFixed(2)} disponible`,
             color: "text-blue-400",
           },
           {
-            label: "Bankroll expuesto",
+            label: "Expuesto / Bankroll",
             value: `$${(stats?.exposure ?? 0).toFixed(2)}`,
             sub: `${stats?.exposurePct ?? 0}% de $${stats?.bankroll ?? 100}`,
-            color: (stats?.exposurePct ?? 0) > 80 ? "text-yellow-400" : "text-white",
+            color: (stats?.exposurePct ?? 0) > 75 ? "text-yellow-400" : "text-green-400",
           },
           {
             label: "Win rate",

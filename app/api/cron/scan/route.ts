@@ -5,9 +5,33 @@ import { computeActivityMetrics, computeScore, FILTERS } from "@/lib/scoring";
 
 export const maxDuration = 20;
 
-const BANKROLL      = 100;  // USD paper trading bankroll
-const MAX_OPEN      = 20;   // max concurrent open positions
-const SIZE_PER_SLOT = BANKROLL / MAX_OPEN; // $5 per position
+// ─── Money management ────────────────────────────────────────────────────────
+const BANKROLL          = 100;   // USD paper trading bankroll
+const MAX_EXPOSURE_PCT  = 0.80;  // never deploy more than 80% of bankroll
+const MIN_SIZE          = 0.50;  // minimum bet size
+const MAX_SIZE          = 5.00;  // maximum bet size (5% of bankroll)
+const WIN_RATE_PROXY    = 0.52;  // conservative proxy until real history exists
+
+/**
+ * Quarter-Kelly sizing for a binary prediction market position.
+ * Bet at price `p`, estimated win probability `w`, bankroll `b`.
+ * Returns dollar amount to bet.
+ */
+function kellySize(price: number, winRate: number, whaleScore: number): number {
+  if (price <= 0 || price >= 1) return MIN_SIZE;
+
+  // Kelly fraction = (w - p) / (1 - p)  [for binary prediction markets]
+  const edge = winRate - price;
+  const f    = edge / (1 - price);
+
+  // Quarter Kelly, scaled by whale quality (score 40-90 → multiplier 0.8-1.2)
+  const scoreMult = 0.8 + Math.min(Math.max(whaleScore - 40, 0) / 125, 0.4);
+  const fraction  = Math.max(f * 0.25 * scoreMult, 0);
+  const size      = fraction * BANKROLL;
+
+  return Math.min(Math.max(size, MIN_SIZE), MAX_SIZE);
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 const GAMMA_API = "https://gamma-api.polymarket.com";
 
@@ -38,11 +62,10 @@ async function resolveOpenSignals(log: string[]): Promise<number> {
       if (!market || !(market.resolved === true || market.closed === true)) continue;
 
       const outcomePriceYes = Number(market.outcomePrices?.[0] ?? -1);
-      const outcomeIsYes = sig.outcome?.toUpperCase() === "YES";
-      const won = outcomeIsYes ? outcomePriceYes >= 0.99 : outcomePriceYes <= 0.01;
-
-      const exitPrice = won ? 1 : 0;
-      const pnl = (exitPrice - sig.entry_price) * sig.suggested_size_usdc;
+      const outcomeIsYes    = sig.outcome?.toUpperCase() === "YES";
+      const won             = outcomeIsYes ? outcomePriceYes >= 0.99 : outcomePriceYes <= 0.01;
+      const exitPrice       = won ? 1 : 0;
+      const pnl             = (exitPrice - sig.entry_price) * sig.suggested_size_usdc;
 
       await db.from("signals").update({
         status:     won ? "won" : "lost",
@@ -50,10 +73,10 @@ async function resolveOpenSignals(log: string[]): Promise<number> {
         pnl_usdc:   Math.round(pnl * 100) / 100,
       }).eq("id", sig.id);
 
-      log.push(`RESOLVED: ${sig.market_id.slice(0, 12)}… ${won ? "WON" : "LOST"} P&L $${pnl.toFixed(2)}`);
+      log.push(`RESOLVED: ${sig.market_id.slice(0, 12)}… ${won ? "✓ WON" : "✗ LOST"} P&L $${pnl.toFixed(2)}`);
       resolved++;
     } catch (err) {
-      log.push(`RESOLVE_ERR: ${sig.market_id.slice(0, 12)} — ${err instanceof Error ? err.message : String(err)}`);
+      log.push(`RESOLVE_ERR: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   return resolved;
@@ -70,24 +93,31 @@ export async function GET(req: NextRequest) {
 
   const log: string[] = [];
   let newSignals = 0;
-  let resolved = 0;
-  let skippedFirstScan = 0;
+  let resolved   = 0;
+  let skipped    = 0;
 
   try {
+    // Step 0: resolve old signals
     resolved = await resolveOpenSignals(log);
 
     const db = getSupabase();
 
-    // Check how many open positions we already have
-    const { count: openCount } = await db
+    // Step 1: check current portfolio exposure
+    const { data: openSigs } = await db
       .from("signals")
-      .select("*", { count: "exact", head: true })
+      .select("suggested_size_usdc")
       .eq("status", "open");
 
-    const slotsAvailable = MAX_OPEN - (openCount ?? 0);
-    log.push(`Open: ${openCount ?? 0}/${MAX_OPEN} — slots available: ${slotsAvailable}`);
+    const currentExposure = (openSigs ?? []).reduce(
+      (sum, s) => sum + (Number(s.suggested_size_usdc) || 0), 0
+    );
+    const maxExposure    = BANKROLL * MAX_EXPOSURE_PCT;
+    const availableCash  = maxExposure - currentExposure;
+    const openCount      = openSigs?.length ?? 0;
 
-    // Rotate through cached wallets: 5 wallets per run
+    log.push(`Portfolio: ${openCount} open | $${currentExposure.toFixed(2)}/$${maxExposure} exposed | $${availableCash.toFixed(2)} disponible`);
+
+    // Step 2: load wallets (rotate 5 per run through the 45-wallet cache)
     const minute = new Date().getMinutes();
     const offset = (Math.floor(minute / 5) * 5) % 50;
 
@@ -95,7 +125,7 @@ export async function GET(req: NextRequest) {
 
     const { data: savedWallets } = await db
       .from("whale_wallets")
-      .select("address, user_name, profit, score")
+      .select("address, user_name, score")
       .order("score", { ascending: false })
       .range(offset, offset + 4);
 
@@ -105,43 +135,43 @@ export async function GET(req: NextRequest) {
         score:    Number(w.score ?? 0),
         userName: String(w.user_name ?? ""),
       }));
-      log.push(`Cache: ${candidates.length} wallets (offset ${offset})`);
+      log.push(`Wallets: ${candidates.length} from cache (offset ${offset})`);
     } else {
+      // Fallback: live leaderboard fetch
       const raw = await fetchLeaderboard(50);
-      const top = raw
-        .map((w) => ({
-          address:  String(w.proxyWallet ?? w.proxyWalletAddress ?? w.address ?? ""),
-          profit:   Number(w.pnl ?? w.profit ?? 0),
-          volume:   Number(w.vol ?? w.volume ?? 0),
-          userName: String(w.userName ?? ""),
-        }))
-        .filter((c) => c.address && c.profit >= FILTERS.MIN_PROFIT_USDC)
-        .slice(0, 5);
-
-      for (const c of top) {
+      for (const w of raw.slice(0, 5)) {
         try {
-          const trades = await fetchTrades(c.address, 50);
+          const addr = String(w.proxyWallet ?? w.proxyWalletAddress ?? w.address ?? "");
+          if (!addr) continue;
+          const trades   = await fetchTrades(addr, 50);
           const activity = computeActivityMetrics(trades as Parameters<typeof computeActivityMetrics>[0]);
           if (activity.isBot || activity.daysSinceActive > FILTERS.MAX_ACTIVE_DAYS_AGO) continue;
-          const score = computeScore({ profit: c.profit, winRate: 0.55, tradesPerDay: activity.tradesPerDay, uniqueMarkets: activity.uniqueMarkets, daysSinceActive: activity.daysSinceActive });
-          if (score < 40) continue;
-          candidates.push({ address: c.address, score, userName: c.userName });
+          const score = computeScore({
+            profit: Number(w.pnl ?? 0), winRate: 0.55,
+            tradesPerDay: activity.tradesPerDay, uniqueMarkets: activity.uniqueMarkets,
+            daysSinceActive: activity.daysSinceActive,
+          });
+          if (score >= 40) candidates.push({ address: addr, score, userName: String(w.userName ?? "") });
         } catch { /* skip */ }
       }
-      log.push(`Fallback: ${candidates.length} wallets`);
+      log.push(`Wallets: ${candidates.length} from live leaderboard (fallback)`);
     }
+
+    // Step 3: scan positions
+    let remainingCash = availableCash;
 
     for (const c of candidates) {
       try {
         const rawPositions = await fetchPositions(c.address);
 
-        // Check if this is the FIRST time we see this wallet (no existing snapshots)
-        const { count: existingSnapshots } = await db
+        // Detect first-ever scan for this wallet
+        const { count: snapCount } = await db
           .from("position_snapshots")
           .select("*", { count: "exact", head: true })
           .eq("whale_address", c.address);
 
-        const isFirstScan = (existingSnapshots ?? 0) === 0;
+        const isFirstScan = (snapCount ?? 0) === 0;
+        let firstScanCount = 0;
 
         for (const p of rawPositions) {
           const marketId = String(p.conditionId ?? p.marketId ?? "");
@@ -149,7 +179,7 @@ export async function GET(req: NextRequest) {
           const size     = Number(p.size ?? p.currentValue ?? 0);
           const price    = Number(p.avgPrice ?? p.averagePrice ?? p.price ?? 0);
 
-          if (!marketId || !outcome || size <= 0) continue;
+          if (!marketId || !outcome || size <= 0 || price <= 0 || price >= 1) continue;
 
           const { data: existing } = await db
             .from("position_snapshots")
@@ -160,7 +190,7 @@ export async function GET(req: NextRequest) {
             .maybeSingle();
 
           if (existing) {
-            // Known position — update size/price only
+            // Known position — just update tracking
             await db.from("position_snapshots")
               .update({ size, avg_price: price })
               .eq("whale_address", c.address)
@@ -169,28 +199,33 @@ export async function GET(req: NextRequest) {
             continue;
           }
 
-          // New position in DB → save snapshot first
+          // New position — save snapshot
           await db.from("position_snapshots").upsert({
-            whale_address: c.address, market_id: marketId, outcome, size, avg_price: price,
+            whale_address: c.address, market_id: marketId,
+            outcome, size, avg_price: price,
           });
 
-          // FIRST SCAN: just snapshot, don't create signal (historical position)
+          // First scan = snapshot only, no signal (historical position)
           if (isFirstScan) {
-            skippedFirstScan++;
+            firstScanCount++;
             continue;
           }
 
-          // SUBSEQUENT SCAN: truly new position the whale just opened → check slots
-          if (slotsAvailable <= 0) {
-            log.push(`SKIP (full): ${c.userName || c.address.slice(0, 8)} → ${outcome} @ ${price.toFixed(3)}`);
+          // Real new entry — calculate Kelly size
+          const betSize = kellySize(price, WIN_RATE_PROXY, c.score);
+
+          // Skip if not enough cash remaining
+          if (remainingCash < betSize * 0.5) {
+            skipped++;
             continue;
           }
 
-          // Fetch title from gamma-api
+          // Fetch market title from gamma-api
           let marketTitle = String(p.title ?? p.marketTitle ?? p.market_title ?? "");
           if (!marketTitle) {
             try {
-              const r = await fetch(`${GAMMA_API}/markets?conditionIds=${marketId}`, { headers: { Accept: "application/json" }, cache: "no-store" });
+              const r = await fetch(`${GAMMA_API}/markets?conditionIds=${marketId}`,
+                { headers: { Accept: "application/json" }, cache: "no-store" });
               if (r.ok) {
                 const m = await r.json();
                 marketTitle = (Array.isArray(m) ? m[0] : m)?.question ?? "";
@@ -198,7 +233,7 @@ export async function GET(req: NextRequest) {
             } catch { /* title stays empty */ }
           }
 
-          const suggestedSize = Math.round(SIZE_PER_SLOT * 100) / 100;
+          const suggestedSize = Math.round(betSize * 100) / 100;
 
           const { error: insertErr } = await db.from("signals").insert({
             whale_address:        c.address,
@@ -214,29 +249,40 @@ export async function GET(req: NextRequest) {
           });
 
           if (insertErr) {
-            log.push(`INSERT_ERR: ${marketId.slice(0, 12)} — ${insertErr.message}`);
+            log.push(`ERR: ${insertErr.message}`);
           } else {
             newSignals++;
-            log.push(`NEW: ${c.userName || c.address.slice(0, 8)} → ${outcome} @ ${price.toFixed(3)} $${suggestedSize} | ${marketTitle || marketId.slice(0, 20)}`);
+            remainingCash -= suggestedSize;
+            log.push(
+              `NEW: ${c.userName || c.address.slice(0, 8)} → ${outcome} @ ${price.toFixed(3)} ` +
+              `$${suggestedSize} (Kelly) | ${marketTitle || marketId.slice(0, 25)}`
+            );
           }
         }
 
-        if (isFirstScan && skippedFirstScan > 0) {
-          log.push(`FIRST_SCAN: ${c.userName || c.address.slice(0, 8)} — ${skippedFirstScan} posiciones snapshotted, 0 señales (serán señales desde el próximo scan)`);
-          skippedFirstScan = 0;
+        if (isFirstScan && firstScanCount > 0) {
+          log.push(`SNAPSHOT: ${c.userName || c.address.slice(0, 8)} — ${firstScanCount} posiciones guardadas, señales desde próximo scan`);
         }
       } catch (walletErr) {
         log.push(`WALLET_ERR: ${c.address.slice(0, 8)} — ${walletErr instanceof Error ? walletErr.message : String(walletErr)}`);
       }
     }
 
+    const finalExposure = currentExposure + (openSigs ? 0 : 0) +
+      (newSignals > 0 ? maxExposure - remainingCash - currentExposure : 0);
+
     return NextResponse.json({
-      ok: true,
-      scanned: candidates.length,
+      ok:           true,
+      scanned:      candidates.length,
       newSignals,
       resolved,
-      openPositions: (openCount ?? 0) + newSignals,
-      exposure: `$${((openCount ?? 0) + newSignals) * SIZE_PER_SLOT}/$${BANKROLL}`,
+      skipped,
+      portfolio: {
+        open:     openCount + newSignals,
+        exposure: `$${(currentExposure + (maxExposure - availableCash - remainingCash)).toFixed(2)}`,
+        bankroll: `$${BANKROLL}`,
+        pct:      `${Math.round(((currentExposure + (maxExposure - availableCash - remainingCash)) / BANKROLL) * 100)}%`,
+      },
       log,
       ts: new Date().toISOString(),
     });
