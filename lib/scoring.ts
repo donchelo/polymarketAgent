@@ -22,12 +22,18 @@ export function computeScore({
   uniqueMarkets: number;
   daysSinceActive: number;
 }): number {
-  const freqPts   = Math.min((tradesPerDay / 3) * 35, 35);
-  const divPts    = Math.min((uniqueMarkets / 30) * 25, 25);
-  const wrPts     = winRate * 25;
-  const profitPts = Math.min((Math.log10(Math.max(profit, 1)) / 5) * 15, 15);
-  const penalty   = Math.min(daysSinceActive * 2, 20);
-  return Math.max(freqPts + divPts + wrPts + profitPts - penalty, 0);
+  // Frequency: 0-30 pts (3 trades/day = max)
+  const freqPts   = Math.min((tradesPerDay / 3) * 30, 30);
+  // Diversity: 0-20 pts (30 unique markets = max)
+  const divPts    = Math.min((uniqueMarkets / 30) * 20, 20);
+  // Profit: 0-30 pts (log scale — $1K=12pts, $100K=24pts, $10M=30pts)
+  const profitPts = Math.min((Math.log10(Math.max(profit, 1)) / 7) * 30, 30);
+  // Recency: 0-20 pts (active today=20, 7 days ago=6, 10+ days=0)
+  const recencyPts = Math.max(20 - daysSinceActive * 2, 0);
+  // Win rate bonus: only if we have real data (not the 0.55 proxy)
+  const wrBonus   = winRate !== 0.55 ? Math.min(winRate * 20, 20) : 0;
+
+  return Math.max(freqPts + divPts + profitPts + recencyPts + wrBonus, 0);
 }
 
 export function computeActivityMetrics(trades: Array<{

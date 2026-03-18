@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
         volume:    Number(w.vol ?? w.volume ?? 0),
       }))
       .filter((c) => c.address && c.profit >= FILTERS.MIN_PROFIT_USDC)
-      .slice(0, 50); // top 50 — compute score via trades
+      .slice(0, 100); // top 100 wallets
 
     if (!candidates.length) {
       return NextResponse.json({ ok: false, error: "No wallets returned from leaderboard", ts: new Date().toISOString() });

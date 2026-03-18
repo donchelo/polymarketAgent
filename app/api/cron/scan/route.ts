@@ -123,11 +123,27 @@ export async function GET(req: NextRequest) {
 
     let candidates: Array<{ address: string; score: number; userName: string }> = [];
 
-    const { data: savedWallets } = await db
+    // Priority 1: wallets that have NEVER been position-scanned (no snapshot yet)
+    const { data: snappedAddrs } = await db
+      .from("position_snapshots")
+      .select("whale_address");
+    const alreadySnapped = new Set((snappedAddrs ?? []).map((s) => s.whale_address));
+
+    const { data: allWallets } = await db
       .from("whale_wallets")
       .select("address, user_name, score")
       .order("score", { ascending: false })
-      .range(offset, offset + 4);
+      .limit(100);
+
+    const unsnapped = (allWallets ?? []).filter((w) => !alreadySnapped.has(w.address));
+    const rotationPool = (allWallets ?? []).filter((w) => alreadySnapped.has(w.address));
+
+    // Pick up to 5 unsnapped (first-scan priority) + up to 5 from rotation
+    const unsnappedBatch = unsnapped.slice(0, 5);
+    const rotationBatch  = rotationPool.slice(offset % Math.max(rotationPool.length, 1),
+                            (offset % Math.max(rotationPool.length, 1)) + Math.max(0, 10 - unsnappedBatch.length));
+
+    const savedWallets = [...unsnappedBatch, ...rotationBatch];
 
     if (savedWallets && savedWallets.length >= 1) {
       candidates = savedWallets.map((w) => ({
@@ -135,7 +151,7 @@ export async function GET(req: NextRequest) {
         score:    Number(w.score ?? 0),
         userName: String(w.user_name ?? ""),
       }));
-      log.push(`Wallets: ${candidates.length} from cache (offset ${offset})`);
+      log.push(`Wallets: ${unsnappedBatch.length} new-snapshot + ${rotationBatch.length} rotation = ${candidates.length} total (${unsnapped.length} unsnapped remaining)`);
     } else {
       // Fallback: live leaderboard fetch
       const raw = await fetchLeaderboard(50);
