@@ -3,7 +3,7 @@ import { getSupabase } from "@/lib/supabase";
 import { fetchLeaderboard, fetchTrades, fetchPositions } from "@/lib/polymarket";
 import { computeActivityMetrics, computeScore, FILTERS } from "@/lib/scoring";
 
-export const maxDuration = 60;
+export const maxDuration = 20;
 
 const BANKROLL = 100;
 const FLAT_SIZE = 2;   // flat $2 per signal (no real win rate yet)
@@ -86,14 +86,17 @@ export async function GET(req: NextRequest) {
     const db = getSupabase();
     let candidates: Array<{ address: string; profit: number; score: number; userName: string; fromCache: boolean }> = [];
 
-    // Try to load pre-vetted wallets from Supabase cache (refresh-leaderboard cron)
+    // Rotate through cached wallets: each run covers 5 wallets, offset by run minute
+    const minute = new Date().getMinutes();
+    const offset = (Math.floor(minute / 5) * 5) % 50; // 0,5,10...45 cycling
+
     const { data: savedWallets } = await db
       .from("whale_wallets")
       .select("address, user_name, profit, score")
       .order("score", { ascending: false })
-      .limit(15); // 15 wallets × 1 API call (positions only) fits in 60s
+      .range(offset, offset + 4); // 5 wallets per run
 
-    if (savedWallets && savedWallets.length >= 5) {
+    if (savedWallets && savedWallets.length >= 1) {
       candidates = savedWallets.map((w) => ({
         address:   w.address,
         profit:    Number(w.profit),
@@ -101,7 +104,7 @@ export async function GET(req: NextRequest) {
         userName:  String(w.user_name ?? ""),
         fromCache: true,
       }));
-      log.push(`Cache: ${candidates.length} wallets`);
+      log.push(`Cache: ${candidates.length} wallets (offset ${offset})`);
     } else {
       // Fallback: fetch leaderboard + trades (slower, max 5 wallets)
       const raw = await fetchLeaderboard(50);
