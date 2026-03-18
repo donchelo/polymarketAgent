@@ -7,7 +7,12 @@ const config: Config = {
     "./lib/**/*.{ts,tsx}",
   ],
   theme: {
-    extend: {},
+    extend: {
+      fontFamily: {
+        sans:  ["Outfit", "system-ui", "sans-serif"],
+        mono:  ["JetBrains Mono", "Menlo", "monospace"],
+      },
+    },
   },
   plugins: [],
 };

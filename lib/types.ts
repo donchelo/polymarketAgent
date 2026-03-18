@@ -9,6 +9,24 @@ export interface WalletProfile {
   uniqueMarkets: number;
   daysSinceActive: number;
   score: number;
+  // enriched from whale_wallets DB
+  realWinRate?: number | null;
+  pctShortTerm?: number | null;   // 0–1
+  topCategory?: string | null;
+  isLeader?: boolean;
+}
+
+export interface LeaderInfo {
+  address: string;
+  userName: string | null;
+  score: number | null;
+  tradesPerDay: number | null;
+  winRate: number | null;
+  leaderScore: number | null;
+  selectedAt: string;
+  // enriched
+  topCategory?: string | null;
+  pctShortTerm?: number | null;
 }
 
 export interface Position {
@@ -36,6 +54,7 @@ export interface LeaderboardResponse {
   computedAt: string;
   candidateCount: number;
   rawCount?: number;
+  leader?: LeaderInfo | null;
 }
 
 export interface PositionsResponse {
