@@ -14,6 +14,7 @@ const MAX_SIZE            = 5.00;
 const WIN_RATE_PROXY      = 0.52;
 const MIN_PRICE           = 0.08;  // skip near-certain outcomes
 const MAX_PRICE           = 0.92;
+const MIN_EDGE            = 0.05;  // require ≥5% edge — filters coin-flip markets
 const TOP_WHALES          = 10;
 const MIN_SCORE           = 50;
 const MIN_TRADES_PER_DAY  = 1.5;
@@ -21,7 +22,7 @@ const MIN_TRADES_PER_DAY  = 1.5;
 function kellySize(price: number, winRate: number, score: number): number {
   if (price <= 0 || price >= 1) return 0;
   const edge = winRate - price;
-  if (edge <= 0) return 0;
+  if (edge < MIN_EDGE) return 0;  // require meaningful edge — filters coin-flips
   const f         = edge / (1 - price);
   const scoreMult = 0.8 + Math.min(Math.max(score - 40, 0) / 125, 0.4);
   const size      = f * 0.25 * scoreMult * BANKROLL;
@@ -220,14 +221,18 @@ export async function GET(req: Request) {
     // Check if this would have passed the ≤24h duration filter at time of trade.
     // Heuristic: if the market is still open now AND endDate is far future → was too long.
     if (!market.closed) {
-      if (market.endDateIso) {
-        const hoursToEnd = (new Date(market.endDateIso).getTime() - Date.now()) / (1000 * 3600);
-        if (hoursToEnd > 24) {
-          // Likely was also >24h at trade time → would have been skipped
-          e.betSize = 0;
-          skipped++;
-          return e;
-        }
+      if (!market.endDateIso) {
+        // Unknown duration → scan would have skipped this
+        e.betSize = 0;
+        skipped++;
+        return e;
+      }
+      const hoursToEnd = (new Date(market.endDateIso).getTime() - Date.now()) / (1000 * 3600);
+      if (hoursToEnd > 24) {
+        // Likely was also >24h at trade time → would have been skipped
+        e.betSize = 0;
+        skipped++;
+        return e;
       }
       openCount++;
       return e;

@@ -22,6 +22,7 @@ const MIN_TRADES_PER_DAY   = 1.5;
 const MAX_MARKET_DURATION_H = 24;
 const MIN_PRICE  = 0.08;  // skip near-certain outcomes (market already decided)
 const MAX_PRICE  = 0.92;  // symmetric: don't buy >92¢ — no real edge
+const MIN_EDGE   = 0.05;  // require ≥5% edge over price — filters coin-flip markets (~0.49)
 const CLOB_API = "https://clob.polymarket.com";
 
 // ─── Trade detection window ──────────────────────────────────────────────────
@@ -38,7 +39,7 @@ const TRADE_WINDOW_SECS = 10 * 60; // look back 10 minutes
 function kellySize(price: number, winRate: number, score: number): number {
   if (price <= 0 || price >= 1) return 0;
   const edge = winRate - price;
-  if (edge <= 0) return 0;  // no edge → don't bet
+  if (edge < MIN_EDGE) return 0;  // require meaningful edge — filters coin-flips
   const f         = edge / (1 - price);
   const scoreMult = 0.8 + Math.min(Math.max(score - 40, 0) / 125, 0.4);
   const size      = f * 0.25 * scoreMult * BANKROLL;
@@ -254,8 +255,8 @@ export async function GET(req: NextRequest) {
 
         // Check market duration
         const { title, durationH } = await fetchMarketMeta(marketId);
-        if (durationH !== null && durationH > MAX_MARKET_DURATION_H) {
-          log.push(`SKIP_LONG: ${whale.userName} ${marketId.slice(0, 10)} ${Math.round(durationH)}h`);
+        if (durationH === null || durationH > MAX_MARKET_DURATION_H) {
+          log.push(`SKIP_LONG: ${whale.userName} ${marketId.slice(0, 10)} ${durationH === null ? "duración desconocida" : `${Math.round(durationH)}h`}`);
           skipped++;
           continue;
         }
