@@ -150,6 +150,7 @@ export async function GET(req: Request) {
       seenPerWhale.add(key);
 
       const betSize = kellySize(price, whale.winRate, whale.score);
+      if (betSize === 0) continue; // no edge → scan would not have generated a signal
 
       rawEntries.push({
         whaleAddress: whale.address,

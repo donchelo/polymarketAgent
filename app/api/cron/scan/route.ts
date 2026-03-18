@@ -269,6 +269,11 @@ export async function GET(req: NextRequest) {
           continue;
         }
         const betSize = kellySize(price, whale.winRate, whale.score);
+        if (betSize === 0) {
+          log.push(`SKIP_NO_EDGE: ${whale.userName} → ${outcome} @ ${price.toFixed(3)}`);
+          skipped++;
+          continue;
+        }
         if (remainingCash < betSize * 0.5) {
           log.push(`SKIP_CASH: portfolio lleno ($${remainingCash.toFixed(2)} libre)`);
           skipped++;
