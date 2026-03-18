@@ -21,6 +21,7 @@ export default function RootLayout({
             <nav className="ml-auto flex items-center gap-4">
               <a href="/" className="text-sm text-gray-400 hover:text-white transition-colors">Leaderboard</a>
               <a href="/signals" className="text-sm text-gray-400 hover:text-white transition-colors">Señales</a>
+              <a href="/whale-study" className="text-sm text-gray-400 hover:text-white transition-colors">Inteligencia</a>
             </nav>
           </div>
         </header>

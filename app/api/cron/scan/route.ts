@@ -36,6 +36,35 @@ function kellySize(price: number, winRate: number, whaleScore: number): number {
 
 const GAMMA_API = "https://gamma-api.polymarket.com";
 
+// Only enter markets with duration <= this many hours
+const MAX_MARKET_DURATION_H = 24;
+
+/**
+ * Fetch market info from Gamma API.
+ * Returns { title, durationH } — durationH is null if dates unavailable.
+ */
+async function fetchMarketMeta(marketId: string): Promise<{ title: string; durationH: number | null }> {
+  try {
+    const r = await fetch(`${GAMMA_API}/markets?conditionIds=${marketId}`,
+      { headers: { Accept: "application/json" }, cache: "no-store" });
+    if (!r.ok) return { title: "", durationH: null };
+    const data = await r.json();
+    const m = Array.isArray(data) ? data[0] : data;
+    if (!m) return { title: "", durationH: null };
+    const title = String(m.question ?? "");
+    let durationH: number | null = null;
+    const start = m.startDate ?? m.createdAt;
+    const end   = m.endDate ?? m.closedTime;
+    if (start && end) {
+      const ms = new Date(end).getTime() - new Date(start).getTime();
+      if (ms > 0) durationH = ms / (1000 * 3600);
+    }
+    return { title, durationH };
+  } catch {
+    return { title: "", durationH: null };
+  }
+}
+
 async function resolveOpenSignals(log: string[]): Promise<number> {
   const db = getSupabase();
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -115,6 +144,7 @@ export async function GET(req: NextRequest) {
     const maxExposure    = BANKROLL * MAX_EXPOSURE_PCT;
     const availableCash  = maxExposure - currentExposure;
     const openCount      = openSigs?.length ?? 0;
+    let remainingCash    = availableCash; // mutable; decremented as signals are created
 
     log.push(`Portfolio: ${openCount} open | $${currentExposure.toFixed(2)}/$${maxExposure} exposed | $${availableCash.toFixed(2)} disponible`);
 
@@ -133,7 +163,7 @@ export async function GET(req: NextRequest) {
     if (leaderAgeMin > 120) {
       const { data: allWallets } = await db
         .from("whale_wallets")
-        .select("address, user_name, score, trades_per_day, win_rate")
+        .select("address, user_name, score, trades_per_day, win_rate, real_win_rate, pct_short_term")
         .gte("score", LEADER_CRITERIA.MIN_SCORE)
         .order("score", { ascending: false })
         .limit(50);
@@ -141,32 +171,109 @@ export async function GET(req: NextRequest) {
       const best = selectBestLeader(
         (allWallets ?? []).map((w) => ({
           ...w,
-          score: Number(w.score ?? 0),
+          score:          Number(w.score ?? 0),
           trades_per_day: Number(w.trades_per_day ?? 0),
-          win_rate: Number(w.win_rate ?? 0.52), // proxy si aún no hay datos reales
+          win_rate:       Number(w.win_rate ?? 0.52),
+          real_win_rate:  w.real_win_rate != null ? Number(w.real_win_rate) : null,
+          pct_short_term: w.pct_short_term != null ? Number(w.pct_short_term) : null,
         }))
       );
 
       if (best) {
         const leaderScore = computeLeaderScore(best);
         const now = new Date().toISOString();
+        const realWr = (best as { real_win_rate?: number | null }).real_win_rate;
         await db.from("leader_config").upsert({
           id: 1,
           address: best.address,
           user_name: best.user_name,
           score: best.score,
           trades_per_day: best.trades_per_day,
-          win_rate: best.win_rate,
+          win_rate: realWr ?? best.win_rate,
           leader_score: leaderScore,
           selected_at: now,
         });
         currentLeader = { ...best, leader_score: leaderScore, selected_at: now };
-        log.push(`LEADER: ${best.user_name || best.address.slice(0, 8)} seleccionado (leader_score=${leaderScore.toFixed(2)})`);
+        const wrLabel = realWr != null ? `wr_real=${(realWr * 100).toFixed(0)}%` : `wr_proxy`;
+        log.push(`LEADER: ${best.user_name || best.address.slice(0, 8)} seleccionado (${wrLabel}, leader_score=${leaderScore.toFixed(2)})`);
       } else {
         log.push(`LEADER: ningún candidato cumple criterios mínimos`);
       }
     } else {
       log.push(`LEADER: ${currentLeader?.user_name || currentLeader?.address?.slice(0, 8) || "ninguno"} (${Math.round(leaderAgeMin)}m ago, re-eval en ${Math.round(120 - leaderAgeMin)}m)`);
+    }
+
+    // Step 1c: trade monitoring for the leader (detect BUY trades in last 10min)
+    if (currentLeader?.address) {
+      try {
+        const leaderTrades = await fetchTrades(currentLeader.address, 50);
+        const tenMinAgo = Date.now() / 1000 - 10 * 60;
+
+        const recentBuys = (leaderTrades as Record<string, unknown>[]).filter((t) => {
+          const ts = t.timestamp ?? t.created_at ?? t.time;
+          const tsNum = typeof ts === "string" ? parseFloat(ts) : Number(ts);
+          const isBuy = String(t.side ?? t.type ?? "").toUpperCase() === "BUY" ||
+                        Number(t.size ?? 0) > 0;
+          return !isNaN(tsNum) && tsNum > tenMinAgo && isBuy;
+        });
+
+        for (const t of recentBuys) {
+          const marketId = String(t.conditionId ?? t.market ?? t.marketId ?? "");
+          const outcome  = String(t.outcome ?? "").toUpperCase();
+          const price    = Number(t.price ?? t.avgPrice ?? 0);
+          if (!marketId || !outcome || price <= 0 || price >= 1) continue;
+
+          // Check if signal already exists for this market+outcome
+          const { data: existing } = await db
+            .from("signals")
+            .select("id")
+            .eq("whale_address", currentLeader.address)
+            .eq("market_id", marketId)
+            .eq("outcome", outcome)
+            .in("status", ["open", "won", "lost", "whale_exited"])
+            .limit(1);
+
+          if (existing?.length) continue; // already tracked
+
+          // New trade detected — check market duration before creating signal
+          const { title: marketTitle, durationH } = await fetchMarketMeta(marketId);
+          if (durationH !== null && durationH > MAX_MARKET_DURATION_H) {
+            log.push(`SKIP_LONG: ${marketId.slice(0, 12)} duración ${Math.round(durationH)}h > ${MAX_MARKET_DURATION_H}h`);
+            continue;
+          }
+
+          const winRate  = currentLeader.win_rate ?? WIN_RATE_PROXY;
+          const betSize  = kellySize(price, winRate, currentLeader.score ?? 50);
+          if (remainingCash < betSize * 0.5) { skipped++; continue; }
+
+          const suggestedSize = Math.round(betSize * 100) / 100;
+          const { error: insertErr } = await db.from("signals").insert({
+            whale_address:        currentLeader.address,
+            whale_score:          currentLeader.score ?? 50,
+            whale_trades_per_day: currentLeader.trades_per_day ?? 0,
+            whale_win_rate:       winRate,
+            market_id:            marketId,
+            market_title:         marketTitle,
+            outcome,
+            whale_size_usdc:      Number(t.size ?? 0),
+            entry_price:          price,
+            suggested_size_usdc:  suggestedSize,
+            status:               "open",
+          });
+
+          if (!insertErr) {
+            newSignals++;
+            remainingCash -= suggestedSize;
+            log.push(`TRADE_COPY: líder entró ${outcome} @ ${price.toFixed(3)} $${suggestedSize} | ${marketTitle || marketId.slice(0, 25)}`);
+          }
+        }
+
+        if (recentBuys.length > 0) {
+          log.push(`TRADE_MON: ${recentBuys.length} trades recientes del líder procesados`);
+        }
+      } catch (tradeErr) {
+        log.push(`TRADE_MON_ERR: ${tradeErr instanceof Error ? tradeErr.message : String(tradeErr)}`);
+      }
     }
 
     // Step 2: load wallets (rotate 5 per run through the 45-wallet cache)
@@ -226,7 +333,6 @@ export async function GET(req: NextRequest) {
     }
 
     // Step 3: scan positions
-    let remainingCash = availableCash;
 
     for (const c of candidates) {
       try {
@@ -325,22 +431,17 @@ export async function GET(req: NextRequest) {
         // Create signals ONLY for the leader
         if (isLeader) {
           for (const p of newPositions) {
+            // Fetch market meta — skip if duration > 24h
+            const { title: fetchedTitle, durationH } = await fetchMarketMeta(p.marketId);
+            if (durationH !== null && durationH > MAX_MARKET_DURATION_H) {
+              log.push(`SKIP_LONG: ${p.marketId.slice(0, 12)} duración ${Math.round(durationH)}h > ${MAX_MARKET_DURATION_H}h`);
+              continue;
+            }
+            const marketTitle = fetchedTitle || p.title;
+
             const winRate = currentLeader.win_rate ?? WIN_RATE_PROXY;
             const betSize = kellySize(p.price, winRate, c.score);
             if (remainingCash < betSize * 0.5) { skipped++; continue; }
-
-            // Fetch title from gamma-api if not available
-            let marketTitle = p.title;
-            if (!marketTitle) {
-              try {
-                const r = await fetch(`${GAMMA_API}/markets?conditionIds=${p.marketId}`,
-                  { headers: { Accept: "application/json" }, cache: "no-store" });
-                if (r.ok) {
-                  const m = await r.json();
-                  marketTitle = (Array.isArray(m) ? m[0] : m)?.question ?? "";
-                }
-              } catch { /* title stays empty */ }
-            }
 
             const suggestedSize = Math.round(betSize * 100) / 100;
             const { error: insertErr } = await db.from("signals").insert({
