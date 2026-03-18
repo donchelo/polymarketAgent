@@ -135,8 +135,8 @@ export async function GET(req: NextRequest) {
         .from("whale_wallets")
         .select("address, user_name, score, trades_per_day, win_rate")
         .gte("score", LEADER_CRITERIA.MIN_SCORE)
-        .gte("trades_per_day", LEADER_CRITERIA.MIN_TRADES_PER_DAY)
-        .gte("win_rate", LEADER_CRITERIA.MIN_WIN_RATE);
+        .order("score", { ascending: false })
+        .limit(50);
 
       const best = selectBestLeader(
         (allWallets ?? []).map((w) => ({

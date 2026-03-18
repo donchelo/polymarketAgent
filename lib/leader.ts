@@ -1,7 +1,7 @@
 export const LEADER_CRITERIA = {
   MIN_SCORE: 55,
-  MIN_WIN_RATE: 0.54,
-  MIN_TRADES_PER_DAY: 2.0,
+  MIN_WIN_RATE: 0.52,   // usar proxy default hasta tener datos reales
+  MIN_TRADES_PER_DAY: 0, // no filtrar por esto hasta que whale_wallets tenga datos
 };
 
 export function computeLeaderScore(w: {
