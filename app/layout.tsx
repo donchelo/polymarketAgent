@@ -22,10 +22,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
             <nav className="ml-auto flex items-center gap-1">
               {[
-                { href: "/",            label: "Leaderboard" },
-                { href: "/signals",     label: "Señales"     },
-                { href: "/whale-study", label: "Inteligencia"},
-                { href: "/backtest",   label: "Backtest"    },
+                { href: "/",               label: "Leaderboard"   },
+                { href: "/signals",        label: "Señales"       },
+                { href: "/whale-study",    label: "Inteligencia"  },
+                { href: "/backtest",       label: "Backtest"      },
+                { href: "/strategy-lab",   label: "Strategy Lab"  },
               ].map(({ href, label }) => (
                 <a
                   key={href}

@@ -2,34 +2,21 @@ import { NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { fetchTrades } from "@/lib/polymarket";
 import { computeLeaderScore } from "@/lib/leader";
+import { DEFAULT_STRATEGY } from "@/lib/strategy";
 
 export const maxDuration = 60;
 
 const CLOB_API = "https://clob.polymarket.com";
-const BANKROLL            = 100;
-const MAX_EXPOSURE_PCT    = 0.80;
-const MAX_EXPOSURE_PER_WHALE = 15;
-const MIN_SIZE            = 0.50;
-const MAX_SIZE            = 5.00;
-const WIN_RATE_PROXY      = 0.52;
-const MIN_PRICE           = 0.08;  // skip near-certain outcomes
-const MAX_PRICE           = 0.92;
-const MIN_EDGE            = 0.05;  // require ≥5% edge — filters coin-flip markets
-const MIN_REAL_WIN_RATE   = 0.54;  // skip whales with proven win rate below this
-const TOP_WHALES          = 10;
-
 const SPORTS_TAGS = ["nhl","nba","nfl","mlb","soccer","basketball","hockey","baseball","football","sports","tennis","golf","ufc","mma"];
-const MIN_SCORE           = 50;
-const MIN_TRADES_PER_DAY  = 1.5;
 
-function kellySize(price: number, winRate: number, score: number): number {
+function kellySize(price: number, winRate: number, score: number, minEdge: number, bankroll: number, minSize: number, maxSize: number): number {
   if (price <= 0 || price >= 1) return 0;
   const edge = winRate - price;
-  if (edge < MIN_EDGE) return 0;  // require meaningful edge — filters coin-flips
+  if (edge < minEdge) return 0;
   const f         = edge / (1 - price);
   const scoreMult = 0.8 + Math.min(Math.max(score - 40, 0) / 125, 0.4);
-  const size      = f * 0.25 * scoreMult * BANKROLL;
-  return Math.min(Math.max(size, MIN_SIZE), MAX_SIZE);
+  const size      = f * 0.25 * scoreMult * bankroll;
+  return Math.min(Math.max(size, minSize), maxSize);
 }
 
 async function fetchMarketResult(marketId: string): Promise<{
@@ -56,14 +43,33 @@ async function fetchMarketResult(marketId: string): Promise<{
 }
 
 export async function GET(req: Request) {
-  const url      = new URL(req.url);
-  // lookback window: default yesterday (24h–48h ago)
+  const url = new URL(req.url);
+
+  // Strategy params — defaults from DEFAULT_STRATEGY, overridable via query params
+  const p = {
+    BANKROLL:             Number(url.searchParams.get("BANKROLL")             ?? DEFAULT_STRATEGY.BANKROLL),
+    MAX_EXPOSURE_PCT:     Number(url.searchParams.get("MAX_EXPOSURE_PCT")     ?? DEFAULT_STRATEGY.MAX_EXPOSURE_PCT),
+    MAX_EXPOSURE_PER_WHALE: Number(url.searchParams.get("MAX_EXPOSURE_PER_WHALE") ?? DEFAULT_STRATEGY.MAX_EXPOSURE_PER_WHALE),
+    MIN_SIZE:             Number(url.searchParams.get("MIN_SIZE")             ?? DEFAULT_STRATEGY.MIN_SIZE),
+    MAX_SIZE:             Number(url.searchParams.get("MAX_SIZE")             ?? DEFAULT_STRATEGY.MAX_SIZE),
+    WIN_RATE_PROXY:       Number(url.searchParams.get("WIN_RATE_PROXY")       ?? DEFAULT_STRATEGY.WIN_RATE_PROXY),
+    TOP_WHALES:           Number(url.searchParams.get("TOP_WHALES")           ?? DEFAULT_STRATEGY.TOP_WHALES),
+    MIN_SCORE:            Number(url.searchParams.get("MIN_SCORE")            ?? DEFAULT_STRATEGY.MIN_SCORE),
+    MIN_TRADES_PER_DAY:   Number(url.searchParams.get("MIN_TRADES_PER_DAY")   ?? DEFAULT_STRATEGY.MIN_TRADES_PER_DAY),
+    MAX_MARKET_DURATION_H: Number(url.searchParams.get("MAX_MARKET_DURATION_H") ?? DEFAULT_STRATEGY.MAX_MARKET_DURATION_H),
+    MIN_PRICE:            Number(url.searchParams.get("MIN_PRICE")            ?? DEFAULT_STRATEGY.MIN_PRICE),
+    MAX_PRICE:            Number(url.searchParams.get("MAX_PRICE")            ?? DEFAULT_STRATEGY.MAX_PRICE),
+    MIN_EDGE:             Number(url.searchParams.get("MIN_EDGE")             ?? DEFAULT_STRATEGY.MIN_EDGE),
+    MIN_REAL_WIN_RATE:    Number(url.searchParams.get("MIN_REAL_WIN_RATE")    ?? DEFAULT_STRATEGY.MIN_REAL_WIN_RATE),
+  };
+
+  // Lookback window: default yesterday (24h–48h ago)
   const windowEndH   = Number(url.searchParams.get("endH")   ?? 24);  // hours ago
   const windowStartH = Number(url.searchParams.get("startH") ?? 48);  // hours ago
 
-  const nowSec       = Date.now() / 1000;
-  const windowStart  = nowSec - windowStartH * 3600;
-  const windowEnd    = nowSec - windowEndH   * 3600;
+  const nowSec      = Date.now() / 1000;
+  const windowStart = nowSec - windowStartH * 3600;
+  const windowEnd   = nowSec - windowEndH   * 3600;
 
   const db = getSupabase();
 
@@ -71,10 +77,10 @@ export async function GET(req: Request) {
   const { data: dbWhales } = await db
     .from("whale_wallets")
     .select("address, user_name, score, trades_per_day, win_rate, real_win_rate, pct_short_term")
-    .gte("score", MIN_SCORE)
-    .gte("trades_per_day", MIN_TRADES_PER_DAY)
+    .gte("score", p.MIN_SCORE)
+    .gte("trades_per_day", p.MIN_TRADES_PER_DAY)
     .order("score", { ascending: false })
-    .limit(TOP_WHALES * 3);
+    .limit(p.TOP_WHALES * 3);
 
   if (!dbWhales?.length) {
     return NextResponse.json({ error: "No hay whales en DB. Ejecuta refresh-leaderboard primero." }, { status: 400 });
@@ -83,7 +89,7 @@ export async function GET(req: Request) {
   const whales = dbWhales
     .filter(w => {
       // Exclude whales with verified poor win rate (null = no data yet = allowed)
-      if (w.real_win_rate != null && Number(w.real_win_rate) < MIN_REAL_WIN_RATE) return false;
+      if (w.real_win_rate != null && Number(w.real_win_rate) < p.MIN_REAL_WIN_RATE) return false;
       return true;
     })
     .map(w => ({
@@ -91,17 +97,17 @@ export async function GET(req: Request) {
       userName:     w.user_name ?? w.address.slice(0, 8),
       score:        Number(w.score ?? 0),
       tradesPerDay: Number(w.trades_per_day ?? 0),
-      winRate:      Number(w.real_win_rate ?? w.win_rate ?? WIN_RATE_PROXY),
+      winRate:      Number(w.real_win_rate ?? w.win_rate ?? p.WIN_RATE_PROXY),
       compositeScore: computeLeaderScore({
         score:          Number(w.score ?? 0),
         trades_per_day: Number(w.trades_per_day ?? 0),
-        win_rate:       Number(w.win_rate ?? WIN_RATE_PROXY),
+        win_rate:       Number(w.win_rate ?? p.WIN_RATE_PROXY),
         real_win_rate:  w.real_win_rate != null ? Number(w.real_win_rate) : null,
         pct_short_term: w.pct_short_term != null ? Number(w.pct_short_term) : null,
       }),
     }))
     .sort((a, b) => b.compositeScore - a.compositeScore)
-    .slice(0, TOP_WHALES);
+    .slice(0, p.TOP_WHALES);
 
   // Fetch trades for all whales in parallel
   const tradeResults = await Promise.allSettled(
@@ -151,13 +157,13 @@ export async function GET(req: Request) {
       const outcome  = String(t.outcome ?? "").toUpperCase();
       const price    = Number(t.price ?? t.avgPrice ?? 0);
       // Skip near-certain outcomes — market already decided, no real edge
-      if (!marketId || !outcome || price < MIN_PRICE || price > MAX_PRICE) continue;
+      if (!marketId || !outcome || price < p.MIN_PRICE || price > p.MAX_PRICE) continue;
 
       const key = `${whale.address}|${marketId}|${outcome}`;
       if (seenPerWhale.has(key)) continue; // take first entry only
       seenPerWhale.add(key);
 
-      const betSize = kellySize(price, whale.winRate, whale.score);
+      const betSize = kellySize(price, whale.winRate, whale.score, p.MIN_EDGE, p.BANKROLL, p.MIN_SIZE, p.MAX_SIZE);
       if (betSize === 0) continue; // no edge → scan would not have generated a signal
 
       rawEntries.push({
@@ -186,13 +192,13 @@ export async function GET(req: Request) {
   // Apply portfolio caps (simulate exactly as the real scan does)
   const portfolioExposure = { total: 0 };
   const whaleExposure     = new Map<string, number>();
-  const maxTotal          = BANKROLL * MAX_EXPOSURE_PCT;
+  const maxTotal          = p.BANKROLL * p.MAX_EXPOSURE_PCT;
 
   const cappedEntries = rawEntries.filter(e => {
     const we = whaleExposure.get(e.whaleAddress) ?? 0;
-    if (we >= MAX_EXPOSURE_PER_WHALE) { e.betSize = 0; return false; }
+    if (we >= p.MAX_EXPOSURE_PER_WHALE) { e.betSize = 0; return false; }
     if (portfolioExposure.total >= maxTotal) { e.betSize = 0; return false; }
-    const actual = Math.min(e.betSize, MAX_EXPOSURE_PER_WHALE - we, maxTotal - portfolioExposure.total);
+    const actual = Math.min(e.betSize, p.MAX_EXPOSURE_PER_WHALE - we, maxTotal - portfolioExposure.total);
     e.betSize = Math.round(actual * 100) / 100;
     portfolioExposure.total += e.betSize;
     whaleExposure.set(e.whaleAddress, we + e.betSize);
@@ -246,7 +252,7 @@ export async function GET(req: Request) {
         return e;
       }
       const hoursToEnd = (new Date(market.endDateIso).getTime() - Date.now()) / (1000 * 3600);
-      if (hoursToEnd > 24) {
+      if (hoursToEnd > p.MAX_MARKET_DURATION_H) {
         // Likely was also >24h at trade time → would have been skipped
         e.betSize = 0;
         skipped++;
@@ -303,7 +309,7 @@ export async function GET(req: Request) {
       label: `últimas ${windowStartH}h–${windowEndH}h`,
     },
     config: {
-      bankroll:   BANKROLL,
+      bankroll:   p.BANKROLL,
       maxExposure: maxTotal,
       whalesMonitored: whales.length,
       topWhales: whales.map(w => ({ name: w.userName, composite: w.compositeScore.toFixed(2) })),
