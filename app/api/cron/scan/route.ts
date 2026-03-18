@@ -20,7 +20,7 @@ const MIN_TRADES_PER_DAY   = 1.5;
 
 // ─── Market filter ───────────────────────────────────────────────────────────
 const MAX_MARKET_DURATION_H = 24;
-const MIN_PRICE  = 0.08;  // skip near-certain outcomes (market already decided)
+const MIN_PRICE  = 0.12;  // skip near-certain outcomes (proxy breaks below this)
 const MAX_PRICE  = 0.92;  // symmetric: don't buy >92¢ — no real edge
 const MIN_EDGE   = 0.05;  // require ≥5% edge over price — filters coin-flip markets (~0.49)
 const CLOB_API = "https://clob.polymarket.com";
