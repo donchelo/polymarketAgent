@@ -4,5 +4,11 @@
   "installCommand": "npm install",
   "env": {
     "USE_MOCK": "false"
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/scan",
+      "schedule": "*/5 * * * *"
+    }
+  ]
 }

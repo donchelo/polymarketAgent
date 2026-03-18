@@ -18,7 +18,10 @@ export default function RootLayout({
           <div className="max-w-7xl mx-auto flex items-center gap-3">
             <span className="text-xl font-bold text-white">🐋</span>
             <h1 className="text-lg font-semibold text-white">Polymarket Whale Tracker</h1>
-            <span className="text-xs text-gray-500 ml-auto">S01 — Active Wallet Scanner</span>
+            <nav className="ml-auto flex items-center gap-4">
+              <a href="/" className="text-sm text-gray-400 hover:text-white transition-colors">Leaderboard</a>
+              <a href="/signals" className="text-sm text-gray-400 hover:text-white transition-colors">Señales</a>
+            </nav>
           </div>
         </header>
         <main className="max-w-7xl mx-auto px-6 py-8">{children}</main>
