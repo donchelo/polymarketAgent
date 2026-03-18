@@ -12,16 +12,19 @@ const MAX_EXPOSURE_PER_WHALE = 15;
 const MIN_SIZE            = 0.50;
 const MAX_SIZE            = 5.00;
 const WIN_RATE_PROXY      = 0.52;
+const MIN_PRICE           = 0.08;  // skip near-certain outcomes
+const MAX_PRICE           = 0.92;
 const TOP_WHALES          = 10;
 const MIN_SCORE           = 50;
 const MIN_TRADES_PER_DAY  = 1.5;
 
 function kellySize(price: number, winRate: number, score: number): number {
-  if (price <= 0 || price >= 1) return MIN_SIZE;
-  const edge      = winRate - price;
+  if (price <= 0 || price >= 1) return 0;
+  const edge = winRate - price;
+  if (edge <= 0) return 0;
   const f         = edge / (1 - price);
   const scoreMult = 0.8 + Math.min(Math.max(score - 40, 0) / 125, 0.4);
-  const size      = Math.max(f * 0.25 * scoreMult, 0) * BANKROLL;
+  const size      = f * 0.25 * scoreMult * BANKROLL;
   return Math.min(Math.max(size, MIN_SIZE), MAX_SIZE);
 }
 
@@ -138,7 +141,8 @@ export async function GET(req: Request) {
       const marketId = String(t.conditionId ?? t.market ?? t.marketId ?? "");
       const outcome  = String(t.outcome ?? "").toUpperCase();
       const price    = Number(t.price ?? t.avgPrice ?? 0);
-      if (!marketId || !outcome || price <= 0 || price >= 1) continue;
+      // Skip near-certain outcomes — market already decided, no real edge
+      if (!marketId || !outcome || price < MIN_PRICE || price > MAX_PRICE) continue;
 
       const key = `${whale.address}|${marketId}|${outcome}`;
       if (seenPerWhale.has(key)) continue; // take first entry only

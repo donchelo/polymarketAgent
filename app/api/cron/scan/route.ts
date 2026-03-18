@@ -20,6 +20,8 @@ const MIN_TRADES_PER_DAY   = 1.5;
 
 // ─── Market filter ───────────────────────────────────────────────────────────
 const MAX_MARKET_DURATION_H = 24;
+const MIN_PRICE  = 0.08;  // skip near-certain outcomes (market already decided)
+const MAX_PRICE  = 0.92;  // symmetric: don't buy >92¢ — no real edge
 const CLOB_API = "https://clob.polymarket.com";
 
 // ─── Trade detection window ──────────────────────────────────────────────────
@@ -29,12 +31,17 @@ const TRADE_WINDOW_SECS = 10 * 60; // look back 10 minutes
  * Quarter-Kelly sizing for a binary prediction market.
  * Kelly fraction = (w - p) / (1 - p), divided by 4, scaled by whale quality.
  */
+/**
+ * Returns 0 if there is no positive edge — caller must skip the trade.
+ * MIN_SIZE only applied when edge > 0 (we have a real reason to bet).
+ */
 function kellySize(price: number, winRate: number, score: number): number {
-  if (price <= 0 || price >= 1) return MIN_SIZE;
-  const edge      = winRate - price;
+  if (price <= 0 || price >= 1) return 0;
+  const edge = winRate - price;
+  if (edge <= 0) return 0;  // no edge → don't bet
   const f         = edge / (1 - price);
   const scoreMult = 0.8 + Math.min(Math.max(score - 40, 0) / 125, 0.4);
-  const size      = Math.max(f * 0.25 * scoreMult, 0) * BANKROLL;
+  const size      = f * 0.25 * scoreMult * BANKROLL;
   return Math.min(Math.max(size, MIN_SIZE), MAX_SIZE);
 }
 
@@ -231,7 +238,8 @@ export async function GET(req: NextRequest) {
         const marketId = String(t.conditionId ?? t.market ?? t.marketId ?? "");
         const outcome  = String(t.outcome ?? "").toUpperCase();
         const price    = Number(t.price ?? t.avgPrice ?? 0);
-        if (!marketId || !outcome || price <= 0 || price >= 1) continue;
+        // Skip invalid prices and near-certain outcomes (market already decided)
+        if (!marketId || !outcome || price < MIN_PRICE || price > MAX_PRICE) continue;
 
         // Already have a signal for this whale+market+outcome?
         const { data: existing } = await db
