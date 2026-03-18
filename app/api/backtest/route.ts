@@ -302,7 +302,7 @@ export async function GET(req: Request) {
       totalBet:     Math.round(totalBet * 100) / 100,
       totalPnl:     Math.round(totalPnl * 100) / 100,
       roi,
-      maxExposureReached: portfolioExposure.total >= maxTotal * 0.95,
+      maxExposureReached: entries.reduce((s, e) => s + e.betSize, 0) >= maxTotal * 0.95,
     },
     byWhale:  whaleSummary,
     entries:  entries.filter(e => e.betSize > 0).map(e => ({
