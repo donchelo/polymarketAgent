@@ -1,30 +1,40 @@
 import { NextResponse } from "next/server";
 
-// Debug endpoint — shows raw Polymarket API response (first 3 profiles)
-// Visit: /api/debug
+// Debug endpoint — probes multiple Polymarket API paths to find what works
 export const revalidate = 0;
 export const maxDuration = 30;
 
+const ENDPOINTS = [
+  "https://data-api.polymarket.com/profiles?limit=3&sortBy=profit&ascending=false",
+  "https://data-api.polymarket.com/leaderboard?limit=3",
+  "https://data-api.polymarket.com/users?limit=3&sortBy=profit",
+  "https://gamma-api.polymarket.com/profiles?limit=3",
+  "https://data-api.polymarket.com/profile?limit=3&sortBy=profit&ascending=false",
+];
+
 export async function GET() {
-  try {
-    const res = await fetch(
-      "https://data-api.polymarket.com/profiles?limit=3&sortBy=profit&ascending=false",
-      {
+  const results: Record<string, unknown> = {};
+
+  for (const url of ENDPOINTS) {
+    try {
+      const res = await fetch(url, {
         headers: {
           Accept: "application/json",
-          "User-Agent": "PolymarketWhaleLeaderboard/1.0",
+          "User-Agent": "Mozilla/5.0",
         },
         cache: "no-store",
-      }
-    );
+      });
+      const text = await res.text();
+      let parsed: unknown = text;
+      try { parsed = JSON.parse(text); } catch { /* keep as text */ }
 
-    const status = res.status;
-    const text = await res.text();
-    let parsed: unknown = null;
-    try { parsed = JSON.parse(text); } catch { parsed = text; }
-
-    return NextResponse.json({ status, sample: parsed });
-  } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+      // Only show first 2 items if array
+      if (Array.isArray(parsed)) parsed = parsed.slice(0, 2);
+      results[url] = { status: res.status, data: parsed };
+    } catch (err) {
+      results[url] = { error: String(err) };
+    }
   }
+
+  return NextResponse.json(results);
 }
